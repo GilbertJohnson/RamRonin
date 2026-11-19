@@ -1,0 +1,331 @@
+//! Character skins. A skin is pure data (JSON-serialisable), so new characters
+//! can be added as "character packs": drop a .json file into
+//! %APPDATA%\RamRonin\packs (or use Control Center > Import character pack).
+
+use crate::util::*;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(default)]
+pub struct Skin {
+    pub id: String,
+    pub name: String,
+    pub author: String,
+    /// Stick colour, "#rrggbb".
+    pub body: String,
+    /// Head fill (defaults to body colour).
+    pub head_fill: Option<String>,
+    /// Line thickness at 100% size.
+    pub line_width: f32,
+    /// "round" | "square" | "masked"
+    pub head: String,
+    /// "dot" | "tomoe" | "visor" | "shades" | "slit"
+    pub eye: String,
+    pub eye_color: Option<String>,
+    /// Headband colour (ninja band). Tails flutter in the wind if `tails`.
+    pub headband: Option<String>,
+    pub tails: bool,
+    pub scarf: Option<String>,
+    pub afro: Option<String>,
+    pub beard: Option<String>,
+    pub cap: Option<String>,
+    pub antenna: bool,
+    /// Chakra/aura colour for jutsu glow.
+    pub aura: Option<String>,
+    /// Movement speed multiplier.
+    pub speed: f32,
+    /// Size multiplier.
+    pub size: f32,
+    /// Uses the arms-back ninja sprint.
+    pub ninja_run: bool,
+    /// Favourite weapon: whip|mallet|wrench|crowbar|gloves|chicken|orb|shuriken|kunai
+    pub favorite: String,
+    pub phrases: Vec<String>,
+}
+
+impl Default for Skin {
+    fn default() -> Self {
+        Skin {
+            id: "custom".into(),
+            name: "Custom".into(),
+            author: String::new(),
+            body: "#111116".into(),
+            head_fill: None,
+            line_width: 4.6,
+            head: "round".into(),
+            eye: "dot".into(),
+            eye_color: None,
+            headband: None,
+            tails: false,
+            scarf: None,
+            afro: None,
+            beard: None,
+            cap: None,
+            antenna: false,
+            aura: None,
+            speed: 1.0,
+            size: 1.0,
+            ninja_run: false,
+            favorite: String::new(),
+            phrases: vec![],
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum HeadStyle {
+    Round,
+    Square,
+    Masked,
+}
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum EyeStyle {
+    Dot,
+    Tomoe,
+    Visor,
+    Shades,
+    Slit,
+}
+
+/// Resolved skin (colours parsed) used by the renderer.
+#[derive(Clone, Debug)]
+pub struct Look {
+    pub id: String,
+    pub name: String,
+    pub body: Col,
+    pub head_fill: Col,
+    pub lw: f32,
+    pub head: HeadStyle,
+    pub eye: EyeStyle,
+    pub eye_col: Col,
+    pub band: Option<Col>,
+    pub tails: bool,
+    pub scarf: Option<Col>,
+    pub afro: Option<Col>,
+    pub beard: Option<Col>,
+    pub cap: Option<Col>,
+    pub antenna: bool,
+    pub aura: Col,
+    pub speed: f32,
+    pub size: f32,
+    pub ninja_run: bool,
+    pub favorite: String,
+    pub phrases: Vec<String>,
+}
+
+impl Skin {
+    pub fn look(&self) -> Look {
+        let body = Col::hex(&self.body).unwrap_or(BLACK);
+        let c = |o: &Option<String>| o.as_deref().and_then(Col::hex);
+        Look {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            body,
+            head_fill: c(&self.head_fill).unwrap_or(body),
+            lw: self.line_width.clamp(1.5, 12.0),
+            head: match self.head.as_str() {
+                "square" => HeadStyle::Square,
+                "masked" => HeadStyle::Masked,
+                _ => HeadStyle::Round,
+            },
+            eye: match self.eye.as_str() {
+                "tomoe" => EyeStyle::Tomoe,
+                "visor" => EyeStyle::Visor,
+                "shades" => EyeStyle::Shades,
+                "slit" => EyeStyle::Slit,
+                _ => EyeStyle::Dot,
+            },
+            eye_col: c(&self.eye_color).unwrap_or(WHITE),
+            band: c(&self.headband),
+            tails: self.tails,
+            scarf: c(&self.scarf),
+            afro: c(&self.afro),
+            beard: c(&self.beard),
+            cap: c(&self.cap),
+            antenna: self.antenna,
+            aura: c(&self.aura).unwrap_or(Col::rgb(90, 190, 255)),
+            speed: self.speed.clamp(0.3, 3.0),
+            size: self.size.clamp(0.4, 3.0),
+            ninja_run: self.ninja_run,
+            favorite: self.favorite.clone(),
+            phrases: self.phrases.clone(),
+        }
+    }
+}
+
+fn s(v: &str) -> Option<String> {
+    Some(v.to_string())
+}
+fn phrases(v: &[&str]) -> Vec<String> {
+    v.iter().map(|x| x.to_string()).collect()
+}
+
+pub fn builtin() -> Vec<Skin> {
+    vec![
+        Skin {
+            id: "shinobi".into(),
+            name: "Shinobi (red band)".into(),
+            author: "RamRonin".into(),
+            body: "#0e0e12".into(),
+            headband: s("#dc1e1e"),
+            tails: true,
+            ninja_run: true,
+            favorite: "orb".into(),
+            speed: 1.15,
+            phrases: phrases(&["Believe it... or don't.", "Dattebonk!", "My ninja way: bonking RAM.", "Shadow mode: ON"]),
+            ..Default::default()
+        },
+        Skin {
+            id: "crimson_eye".into(),
+            name: "Crimson Eye".into(),
+            author: "RamRonin".into(),
+            body: "#18141c".into(),
+            eye: "tomoe".into(),
+            eye_color: s("#e01818"),
+            headband: s("#3a3f4a"),
+            tails: true,
+            scarf: s("#2b2b6e"),
+            ninja_run: true,
+            favorite: "kunai".into(),
+            aura: s("#8a5cff"),
+            phrases: phrases(&["I see your RAM.", "Your process is already dead. (jk)", "Foolish browser tab..."]),
+            ..Default::default()
+        },
+        Skin {
+            id: "fighter".into(),
+            name: "Stickman Fighter".into(),
+            author: "RamRonin".into(),
+            body: "#141414".into(),
+            favorite: "gloves".into(),
+            phrases: phrases(&["Come at me, Chrome!", "One punch. One megabyte.", "Hiyaaa!"]),
+            ..Default::default()
+        },
+        Skin {
+            id: "shadow_ninja".into(),
+            name: "Shadow Ninja".into(),
+            author: "RamRonin".into(),
+            body: "#1a2140".into(),
+            head: "masked".into(),
+            eye: "slit".into(),
+            scarf: s("#c62828"),
+            ninja_run: true,
+            favorite: "kunai".into(),
+            speed: 1.2,
+            phrases: phrases(&["...", "*silent bonk*", "The shadows see your tabs."]),
+            ..Default::default()
+        },
+        Skin {
+            id: "robo".into(),
+            name: "Robo-Bonk 3000".into(),
+            author: "RamRonin".into(),
+            body: "#5b6472".into(),
+            head_fill: s("#8d97a5"),
+            head: "square".into(),
+            eye: "visor".into(),
+            eye_color: s("#29e0ff"),
+            antenna: true,
+            line_width: 5.2,
+            favorite: "wrench".into(),
+            speed: 0.9,
+            phrases: phrases(&["BEEP. MEMORY. TOO. HIGH.", "Initiating bonk.exe", "01000010 01001111 01001110 01001011"]),
+            ..Default::default()
+        },
+        Skin {
+            id: "grandpa".into(),
+            name: "Grandpa Rampage".into(),
+            author: "RamRonin".into(),
+            body: "#3b2a20".into(),
+            head_fill: s("#f0c8a0"),
+            beard: s("#f4f4f4"),
+            cap: s("#4e6b3a"),
+            favorite: "mallet".into(),
+            speed: 0.8,
+            phrases: phrases(&["Back in my day we had 640K!", "Kids and their 40 tabs...", "Get off my taskbar!"]),
+            ..Default::default()
+        },
+        Skin {
+            id: "disco".into(),
+            name: "Neon Disco".into(),
+            author: "RamRonin".into(),
+            body: "#ff2bd6".into(),
+            head_fill: s("#ffd27a"),
+            afro: s("#3a1e0e"),
+            eye: "shades".into(),
+            favorite: "chicken".into(),
+            speed: 1.1,
+            phrases: phrases(&["Groovy RAM, baby!", "Disco bonk!", "Free memory, free spirit."]),
+            ..Default::default()
+        },
+    ]
+}
+
+/// Built-in skins + every valid pack in the packs folder.
+pub fn load_all() -> Vec<Skin> {
+    let mut v = builtin();
+    if let Ok(rd) = std::fs::read_dir(packs_dir()) {
+        let mut files: Vec<_> = rd.flatten().map(|e| e.path()).collect();
+        files.sort();
+        for p in files {
+            if p.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("json")) != Some(true) {
+                continue;
+            }
+            if let Some(list) = std::fs::read_to_string(&p).ok().and_then(|t| parse_pack(&t)) {
+                for sk in list {
+                    v.retain(|o| o.id != sk.id);
+                    v.push(sk);
+                }
+            }
+        }
+    }
+    v
+}
+
+/// A pack file is either one skin object or {"characters":[...]}.
+pub fn parse_pack(text: &str) -> Option<Vec<Skin>> {
+    #[derive(Deserialize)]
+    struct Pack {
+        characters: Vec<Skin>,
+    }
+    let list = if let Ok(p) = serde_json::from_str::<Pack>(text) {
+        p.characters
+    } else {
+        vec![serde_json::from_str::<Skin>(text).ok()?]
+    };
+    let list: Vec<Skin> = list
+        .into_iter()
+        .filter(|s| !s.id.trim().is_empty() && Col::hex(&s.body).is_some())
+        .collect();
+    if list.is_empty() {
+        None
+    } else {
+        Some(list)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn example_packs_parse() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("packs-examples");
+        let mut n = 0;
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let text = std::fs::read_to_string(e.path()).unwrap();
+            let list = parse_pack(&text).unwrap_or_else(|| panic!("bad pack {:?}", e.path()));
+            for s in &list {
+                let _ = s.look();
+            }
+            n += list.len();
+        }
+        assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn builtins_are_valid() {
+        for s in builtin() {
+            assert!(Col::hex(&s.body).is_some(), "{}", s.id);
+        }
+        assert!(parse_pack("{\"id\":\"\",\"body\":\"#000\"}").is_none());
+    }
+}

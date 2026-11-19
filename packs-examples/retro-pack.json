@@ -1,0 +1,34 @@
+{
+  "characters": [
+    {
+      "id": "lime_robot",
+      "name": "Lime Robot",
+      "author": "RamRonin examples",
+      "body": "#2f6b2f",
+      "head_fill": "#9be37a",
+      "head": "square",
+      "eye": "visor",
+      "eye_color": "#ff3b3b",
+      "antenna": true,
+      "line_width": 5.0,
+      "speed": 0.95,
+      "favorite": "wrench",
+      "phrases": ["DEFRAGMENTING YOUR FEELINGS.", "RAM. DETECTED."]
+    },
+    {
+      "id": "ghost_monk",
+      "name": "Ghost Monk",
+      "author": "RamRonin examples",
+      "body": "#9aa4b5",
+      "head_fill": "#eef2f8",
+      "eye": "slit",
+      "scarf": "#e0a400",
+      "aura": "#b388ff",
+      "line_width": 4.0,
+      "size": 1.15,
+      "ninja_run": true,
+      "favorite": "orb",
+      "phrases": ["Let the tabs go.", "Inner peace. Outer bonk."]
+    }
+  ]
+}

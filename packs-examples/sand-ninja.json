@@ -1,0 +1,23 @@
+{
+  "id": "sand_ninja",
+  "name": "Sand Ninja",
+  "author": "RamRonin examples",
+  "body": "#5a3b22",
+  "head_fill": "#e8b98a",
+  "line_width": 4.6,
+  "head": "round",
+  "eye": "dot",
+  "headband": "#3d5a80",
+  "tails": true,
+  "scarf": "#c2873f",
+  "aura": "#f2c14e",
+  "speed": 1.1,
+  "size": 1.0,
+  "ninja_run": true,
+  "favorite": "kunai",
+  "phrases": [
+    "Sand coffin for your RAM.",
+    "The desert is calm. Your RAM is not.",
+    "Grain by grain, I bonk."
+  ]
+}
