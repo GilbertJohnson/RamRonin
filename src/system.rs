@@ -140,14 +140,118 @@ pub fn break_out_of_package() -> bool {
     std::process::Command::new(explorer).arg(&exe).spawn().is_ok()
 }
 
-/// Ask the running instance to open its Control Center.
-pub fn signal_existing() {
+/// Ask the running instance to show the ninja and open its Control Center.
+/// Returns true if it answered. False means there is no host window, or
+/// the instance is hung (it didn't answer within a few seconds).
+pub fn signal_existing() -> bool {
     unsafe {
         let h = FindWindowW(wide(HOST_CLASS).as_ptr(), std::ptr::null());
-        if !h.is_null() {
-            PostMessageW(h, crate::WM_APP_SHOW, 0, 0);
+        if h.is_null() {
+            return false;
+        }
+        // We were just started by the user, so we may set the foreground
+        // window; pass that right on. Without this, Windows' focus-stealing
+        // rule makes the Control Center open *behind* the current window,
+        // and since it has no taskbar button it looks like nothing happened.
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(h, &mut pid);
+        if pid != 0 {
+            AllowSetForegroundWindow(pid);
+        }
+        let mut res = 0usize;
+        SendMessageTimeoutW(h, crate::WM_APP_SHOW, 0, 0, SMTO_ABORTIFHUNG, 5000, &mut res) != 0
+    }
+}
+
+/// Wait up to `ms` for another instance's host window to appear (it may
+/// still be starting up).
+pub fn wait_for_other_window(ms: u64) -> bool {
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+    while std::time::Instant::now() < until {
+        if other_instance_window() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    false
+}
+
+/// Process IDs of other running RamRonin copies (any exe whose file name
+/// starts with "ramronin", e.g. "RamRonin.exe" or "RamRonin (1).exe").
+pub fn other_instance_pids() -> Vec<u32> {
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
+    let me = std::process::id();
+    let mut out = vec![];
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return out;
+        }
+        let mut pe: PROCESSENTRY32W = std::mem::zeroed();
+        pe.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        if Process32FirstW(snap, &mut pe) != 0 {
+            loop {
+                let name = from_wide(&pe.szExeFile).to_lowercase();
+                if pe.th32ProcessID != me && name.starts_with("ramronin") && name.ends_with(".exe") {
+                    out.push(pe.th32ProcessID);
+                }
+                if Process32NextW(snap, &mut pe) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snap);
+    }
+    out
+}
+
+/// End the given processes (our own stuck copies). Returns how many ended.
+pub fn end_processes(pids: &[u32]) -> usize {
+    use windows_sys::Win32::System::Threading::*;
+    let mut n = 0;
+    for &pid in pids {
+        unsafe {
+            let h = OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid);
+            if h.is_null() {
+                continue;
+            }
+            if TerminateProcess(h, 1) != 0 {
+                WaitForSingleObject(h, 3000);
+                n += 1;
+            }
+            CloseHandle(h);
         }
     }
+    n
+}
+
+/// Another copy is running but can't be reached (hung, or stuck before it
+/// made its window). Tell the user instead of exiting silently, and offer to
+/// end it. Returns true if the old copy was ended and we may start.
+pub fn handle_stuck_instance() -> bool {
+    let pids = other_instance_pids();
+    crate::diag::log(format!("another instance is running but not responding; pids {:?}", pids));
+    if pids.is_empty() {
+        message_box(
+            std::ptr::null_mut(),
+            "Another copy of RamRonin seems to be running, but it isn't responding.\n\nOpen Task Manager, end every RamRonin task, then start RamRonin again.",
+            APP_NAME,
+            MB_ICONWARNING | MB_SETFOREGROUND,
+        );
+        return false;
+    }
+    let list = pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ");
+    let q = format!(
+        "RamRonin is already running (process ID {}), but it isn't responding, so nothing is shown on screen.\n\nEnd it and start a fresh RamRonin?",
+        list
+    );
+    if message_box(std::ptr::null_mut(), &q, APP_NAME, MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND) != IDYES {
+        crate::diag::log("user chose to keep the stuck instance");
+        return false;
+    }
+    let n = end_processes(&pids);
+    crate::diag::log(format!("ended {} stuck instance(s)", n));
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -205,9 +309,17 @@ fn reg_del_value(key: &str, name: &str) {
 // autostart
 // ---------------------------------------------------------------------------
 
+/// Flag passed by the Run-key entry, so a launch at sign-in stays quiet
+/// (no "RamRonin is running" notification).
+pub const AUTOSTART_ARG: &str = "--autostart";
+
+fn run_value(exe: &str) -> String {
+    format!("\"{}\" {}", exe, AUTOSTART_ARG)
+}
+
 pub fn set_autostart(on: bool) {
     if on {
-        reg_set_str(RUN_KEY, APP_NAME, &format!("\"{}\"", win::exe_path()));
+        reg_set_str(RUN_KEY, APP_NAME, &run_value(&win::exe_path()));
     } else {
         reg_del_value(RUN_KEY, APP_NAME);
     }
@@ -215,6 +327,16 @@ pub fn set_autostart(on: bool) {
 
 pub fn autostart_enabled() -> bool {
     reg_get_str(RUN_KEY, APP_NAME).is_some()
+}
+
+/// Bring an older Run-key entry (without the --autostart flag) up to date.
+pub fn refresh_autostart_entry() {
+    if let Some(v) = reg_get_str(RUN_KEY, APP_NAME) {
+        if !v.contains(AUTOSTART_ARG) {
+            let exe = v.trim().trim_matches('"').to_string();
+            reg_set_str(RUN_KEY, APP_NAME, &run_value(&exe));
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -324,7 +446,7 @@ pub fn install(owner: HWND) -> Option<PathBuf> {
     reg_set_dword(UNINSTALL_KEY, "NoRepair", 1);
     reg_set_dword(UNINSTALL_KEY, "EstimatedSize", (std::fs::metadata(&dst).map(|m| m.len()).unwrap_or(0) / 1024) as u32);
     if autostart_enabled() {
-        reg_set_str(RUN_KEY, APP_NAME, &format!("\"{}\"", d));
+        reg_set_str(RUN_KEY, APP_NAME, &run_value(&d));
     }
     Some(dst)
 }

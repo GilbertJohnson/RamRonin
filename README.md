@@ -147,6 +147,25 @@ the exe and copied into that folder on first run:
   `RAMRONIN_DEBUG=1` (or put an empty `ramronin.debug` file next to the exe)
   to also write a `debug.log` of his state.
 
+## Troubleshooting: "I ran it and nothing happened"
+- **When it starts, a "RamRonin is running" notification appears.** The tray
+  icon may be hidden under the **^** arrow on the taskbar, because Windows 11
+  puts new tray icons there. You can pin it from *Settings ▸ Personalization ▸
+  Taskbar ▸ Other system tray icons*.
+- **Running `RamRonin.exe` again** while it's already running brings up the
+  Control Center in front of your other windows. If the running copy is stuck,
+  RamRonin says so and offers to end it and start fresh. It no longer exits
+  without telling you.
+- **If it crashes**, a message box says so, and the details go to
+  `%APPDATA%\RamRonin\crash.log`.
+- **Every launch writes a few lines to `%APPDATA%\RamRonin\startup.log`**:
+  what it decided (started, handed off to a running copy, relaunched itself),
+  your monitors, whether the tray icon was added, and where the first frame
+  was drawn. Attach that file (and `crash.log`, if there is one) to a bug
+  report.
+- If Windows Security or Smart App Control blocked the exe, check *Windows
+  Security ▸ Protection history*.
+
 ## Building
 
 Requirements: Rust (MSVC toolchain) and the Visual Studio Build Tools (for

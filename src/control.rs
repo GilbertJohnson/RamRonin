@@ -137,7 +137,7 @@ pub fn open() {
     unsafe {
         if !h.is_null() {
             ShowWindow(h, SW_RESTORE);
-            SetForegroundWindow(h);
+            bring_to_front(h);
             return;
         }
         // size for the monitor the cursor is on
@@ -178,8 +178,22 @@ pub fn open() {
         refresh_lists(true);
         SetTimer(hwnd, TIMER_UI, 50, None);
         ShowWindow(hwnd, SW_SHOW);
-        SetForegroundWindow(hwnd);
+        bring_to_front(hwnd);
     }
+}
+
+/// Make sure the Control Center ends up in front of other windows. It has
+/// no taskbar button, so if Windows' focus-stealing rule refuses
+/// SetForegroundWindow it would open hidden behind the active window. A
+/// brief topmost toggle puts it on top even then.
+unsafe fn bring_to_front(h: HWND) {
+    if SetForegroundWindow(h) != 0 && GetForegroundWindow() == h {
+        return;
+    }
+    let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW;
+    SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, flags);
+    SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
+    SetForegroundWindow(h);
 }
 
 pub fn close() {
