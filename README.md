@@ -113,11 +113,37 @@ app ("Stay awake, Teams!").
 
 ## Characters and packs (extensible)
 Built-in characters: **Shinobi (red band)** (the default), Crimson Eye,
-Stickman Fighter, Shadow Ninja, Robo-Bonk 3000, Grandpa Rampage, Neon Disco,
-and three **Vadivelu** characters (Yellow Shirt Sprint, Lungi Don, Emperor).
-The Vadivelu characters do his famous arms-flailing escape run whenever they
-run, and shout Tamil catchphrases. They are a fan tribute to the Tamil comedy
-legend, not affiliated with him.
+Stickman Fighter, Shadow Ninja, Robo-Bonk 3000, Grandpa Rampage and Neon Disco.
+
+### GIF characters
+*Control Center ▸ Character ▸ Import GIF…* turns any animated GIF into a
+character, for example a clip of your favourite comedian running. It runs,
+perches on windows, naps and whops memory hogs like the ninja. It plays the GIF
+while moving, holds the first frame while standing, and is mirrored when it
+turns around. The GIF is copied into your packs folder with a small `.json`
+next to it:
+
+```json
+{
+  "id": "gif_vadivelu_run", "name": "Vadivelu Run", "body": "#111116",
+  "gif": "vadivelu_run.gif", "gif_idle": null,
+  "gif_key": "", "gif_sticker": true, "gif_faces": "right", "gif_scale": 1.25,
+  "phrases": ["Aaha... kilambitaangayaa!"]
+}
+```
+
+- **Background:** GIFs with a transparent background are drawn as they are.
+  `"gif_key": "auto"` removes a plain background colour, such as a green
+  screen; the importer sets this when the corners share one colour. Any other
+  GIF is shown as a rounded sticker with a white border.
+- **`gif_faces`:** which way the person in the GIF runs. **`gif_idle`:** an
+  optional second GIF shown while standing.
+- GIFs are scaled to at most 200 px high and 90 frames, so they stay light.
+- RamRonin ships no GIFs. Use clips you're allowed to use; they stay on your
+  PC.
+
+`packs-examples/vadivelu-stick.json` has three stick-figure Vadivelu
+characters (a fan tribute) with an arms-flailing "panic" run.
 
 A character is pure data, so new ones can be added without rebuilding. Put a
 `.json` file in `%APPDATA%\RamRonin\packs`, or use *Control Center ▸ Import

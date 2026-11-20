@@ -2373,7 +2373,7 @@ impl Ninja {
             let a = (c.t / 0.2).min(1.0).min(((c.dur - c.t) / 0.35).max(0.0));
             draw_cloud(g, b, &c.lines, c.think, (lay.skel.head.0, lay.skel.bbox().1 - 4.0), self.ui, a);
         }
-        let hb = rig::hit_box(&lay.skel);
+        let hb = rig::hit_box(&lay.skel, look);
         self.hit = if lay.hidden { (0.0, 0.0, 0.0, 0.0) } else { hb };
     }
 }

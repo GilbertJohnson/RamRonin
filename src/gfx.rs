@@ -257,6 +257,27 @@ impl Gfx {
         }
     }
 
+    /// Filled rounded rectangle in local coordinates mapped by `tf` (which
+    /// must already include the pixmap offset).
+    pub fn round_rect_t(&mut self, tf: Transform, x: f32, y: f32, w: f32, h: f32, r: f32, c: Col) {
+        let r = r.min(w / 2.0).min(h / 2.0).max(0.0);
+        let mut pb = PathBuilder::new();
+        pb.move_to(x + r, y);
+        pb.line_to(x + w - r, y);
+        pb.quad_to(x + w, y, x + w, y + r);
+        pb.line_to(x + w, y + h - r);
+        pb.quad_to(x + w, y + h, x + w - r, y + h);
+        pb.line_to(x + r, y + h);
+        pb.quad_to(x, y + h, x, y + h - r);
+        pb.line_to(x, y + r);
+        pb.quad_to(x, y, x + r, y);
+        pb.close();
+        if let Some(path) = pb.finish() {
+            let paint = self.paint(c);
+            self.pm.fill_path(&path, &paint, FillRule::Winding, tf, None);
+        }
+    }
+
     /// Comic-style text with a dark outline.
     pub fn text_outlined(&mut self, x: f32, y: f32, size: f32, fill: Col, outline: Col, s: &str) {
         let o = (size / 12.0).max(1.0);

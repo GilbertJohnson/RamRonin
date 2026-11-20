@@ -599,6 +599,77 @@ pub fn import_pack(owner: HWND, file: &Path) -> Option<String> {
     Some(list[0].id.clone())
 }
 
+/// Turn an animated GIF into a character pack: copy it into the packs folder
+/// and write a .json next to it. Returns the new character's id.
+pub fn import_gif(owner: HWND, file: &Path) -> Option<String> {
+    use crate::sprite::{analyze, Bg};
+    let Some((bg, w, h, frames)) = analyze(file) else {
+        message_box(owner, "That file couldn't be read as an animated GIF.", "Import GIF", MB_ICONWARNING);
+        return None;
+    };
+    let stem = file.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "gif".into());
+    let mut slug: String = stem.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    slug = slug.trim_matches('_').to_string();
+    if slug.is_empty() {
+        slug = "gif".into();
+    }
+    let dir = packs_dir();
+    let mut name = slug.clone();
+    let mut n = 2;
+    while dir.join(format!("{}.gif", name)).exists() || dir.join(format!("{}.json", name)).exists() {
+        name = format!("{}_{}", slug, n);
+        n += 1;
+    }
+    if !copy_file(file, &dir.join(format!("{}.gif", name))) {
+        message_box(owner, "Couldn't copy the GIF into the packs folder.", "Import GIF", MB_ICONERROR);
+        return None;
+    }
+    let left = message_box(
+        owner,
+        &format!(
+            "{} ({}x{}, {} frames)\n\nDoes the person in this GIF face or run to the LEFT?\n\nYes = left, No = right (or straight at you).\n\
+You can change it later: \"gif_faces\" in {}.json in the packs folder.",
+            stem, w, h, frames, name
+        ),
+        "Import GIF character",
+        MB_YESNO | MB_ICONQUESTION,
+    ) == IDYES;
+    let pretty: String = stem
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            let mut c = p.chars();
+            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let low = stem.to_lowercase();
+    let phrases: Vec<&str> = if low.contains("vadivel") {
+        vec!["Aaha... kilambitaangayaa!", "Vada pochey! (and so did your RAM)", "Mudiyala... RAM mudiyala!", "Naanum rowdy dhaan!", "Ennama ipdi panreengalema?", "Edhaiyum plan panni pannanum."]
+    } else {
+        vec![]
+    };
+    let pack = serde_json::json!({
+        "id": format!("gif_{}", name),
+        "name": if pretty.is_empty() { "GIF character".to_string() } else { pretty },
+        "body": "#111116",
+        "gif": format!("{}.gif", name),
+        "gif_key": if bg == Bg::AutoKey { "auto" } else { "" },
+        "gif_sticker": bg == Bg::Sticker,
+        "gif_faces": if left { "left" } else { "right" },
+        "gif_scale": 1.25,
+        "gait": "run",
+        "favorite": "chicken",
+        "phrases": phrases,
+    });
+    let text = serde_json::to_string_pretty(&pack).ok()?;
+    if std::fs::write(dir.join(format!("{}.json", name)), text).is_err() {
+        return None;
+    }
+    crate::diag::log(format!("imported GIF character {} ({:?}, {}x{}, {} frames)", name, bg, w, h, frames));
+    Some(format!("gif_{}", name))
+}
+
 /// Standard "Open file" dialog. `filter` like "Programs\0*.exe\0".
 pub fn open_file_dialog(owner: HWND, title: &str, filter: &str) -> Option<PathBuf> {
     use windows_sys::Win32::UI::Controls::Dialogs::*;

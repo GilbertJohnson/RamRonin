@@ -23,6 +23,7 @@ mod memory;
 mod props;
 mod rig;
 mod skins;
+mod sprite;
 mod system;
 mod taskbar;
 mod tracker;

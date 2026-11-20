@@ -1031,7 +1031,33 @@ fn draw_crown(g: &mut Gfx, look: &Look, at: &dyn Fn(f32, f32) -> P, r: f32) {
     }
 }
 
+/// Where a GIF character is drawn: (bottom-centre, height, rotation degrees).
+fn sprite_place(sk: &Skel, look: &Look) -> (P, f32, f32) {
+    let foot = (sk.hip.0, sk.foot_f.1.max(sk.foot_b.1));
+    let height = HEIGHT * sk.s * look.sprite_scale;
+    // follow the body only when it's really tipped over (flips, handstands)
+    let ang = (sk.neck.0 - sk.hip.0).atan2(sk.hip.1 - sk.neck.1).to_degrees();
+    let deg = if ang.abs() > 55.0 { ang } else { 0.0 };
+    (foot, height, deg)
+}
+
+fn draw_sprite(g: &mut Gfx, sk: &Skel, look: &Look, fx: &FigFx, sp: &crate::sprite::Sprite) {
+    let (foot, height, deg) = sprite_place(sk, look);
+    let moving = (fx.vel.0 * fx.vel.0 + fx.vel.1 * fx.vel.1).sqrt() > 15.0;
+    let (sp, frame) = match (&look.sprite_idle, moving) {
+        (Some(idle), false) => (idle.as_ref(), idle.frame_at(fx.t)),
+        (_, true) => (sp, sp.frame_at(fx.t)),
+        (None, false) => (sp, &sp.frames[0].0),
+    };
+    let flip = (sk.facing < 0.0) != look.sprite_left;
+    crate::sprite::draw(g, sp, frame, foot, height, flip, deg);
+}
+
 pub fn draw_figure(g: &mut Gfx, sk: &Skel, look: &Look, fx: &FigFx) {
+    if let Some(sp) = &look.sprite {
+        draw_sprite(g, sk, look, fx, sp);
+        return;
+    }
     let s = sk.s;
     let lw = look.lw * s / 1.0 * 0.9;
     let body = look.body;
@@ -1205,7 +1231,12 @@ pub fn draw_figure(g: &mut Gfx, sk: &Skel, look: &Look, fx: &FigFx) {
 }
 
 /// Points used to approximate the clickable hit box of a figure.
-pub fn hit_box(sk: &Skel) -> (f32, f32, f32, f32) {
+pub fn hit_box(sk: &Skel, look: &Look) -> (f32, f32, f32, f32) {
+    if let Some(sp) = &look.sprite {
+        let (foot, height, _) = sprite_place(sk, look);
+        let (w, h) = sp.size_for(height);
+        return (foot.0 - w / 2.0, foot.1 - h, foot.0 + w / 2.0, foot.1);
+    }
     let b = sk.bbox();
     let pad = 4.0 * sk.s;
     (b.0 - pad, b.1 - pad, b.2 + pad, b.3 + pad)

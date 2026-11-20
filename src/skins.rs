@@ -58,6 +58,19 @@ pub struct Skin {
     /// Gold chain.
     pub chain: Option<String>,
     pub crown: Option<String>,
+    /// Animated GIF to draw instead of the stick figure (file in the packs
+    /// folder, or a full path). Optional `gif_idle` is shown when standing.
+    pub gif: Option<String>,
+    pub gif_idle: Option<String>,
+    /// Background removal: "auto" (plain colour from the corners), a colour
+    /// "#rrggbb", or "" (keep).
+    pub gif_key: String,
+    /// Opaque GIFs without a key are shown as a rounded sticker.
+    pub gif_sticker: bool,
+    /// Which way the person in the GIF faces/runs: "right" or "left".
+    pub gif_faces: String,
+    /// Size relative to the stick figure.
+    pub gif_scale: f32,
     /// Favourite weapon: whip|mallet|wrench|crowbar|gloves|chicken|orb|shuriken|kunai
     pub favorite: String,
     pub phrases: Vec<String>,
@@ -96,6 +109,12 @@ impl Default for Skin {
             lungi_trim: None,
             chain: None,
             crown: None,
+            gif: None,
+            gif_idle: None,
+            gif_key: String::new(),
+            gif_sticker: true,
+            gif_faces: "right".into(),
+            gif_scale: 1.25,
             favorite: String::new(),
             phrases: vec![],
         }
@@ -156,6 +175,11 @@ pub struct Look {
     pub lungi_trim: Option<Col>,
     pub chain: Option<Col>,
     pub crown: Option<Col>,
+    pub sprite: Option<std::sync::Arc<crate::sprite::Sprite>>,
+    pub sprite_idle: Option<std::sync::Arc<crate::sprite::Sprite>>,
+    /// the GIF's person faces left (so mirror when facing right)
+    pub sprite_left: bool,
+    pub sprite_scale: f32,
     pub favorite: String,
     pub phrases: Vec<String>,
 }
@@ -222,6 +246,14 @@ impl Skin {
             lungi_trim: c(&self.lungi_trim),
             chain: c(&self.chain),
             crown: c(&self.crown),
+            sprite: self.gif.as_deref().and_then(|f| {
+                crate::sprite::load(&crate::sprite::resolve(f), crate::sprite::Bg::parse(&self.gif_key, self.gif_sticker))
+            }),
+            sprite_idle: self.gif_idle.as_deref().and_then(|f| {
+                crate::sprite::load(&crate::sprite::resolve(f), crate::sprite::Bg::parse(&self.gif_key, self.gif_sticker))
+            }),
+            sprite_left: self.gif_faces.eq_ignore_ascii_case("left"),
+            sprite_scale: self.gif_scale.clamp(0.3, 4.0),
             favorite: self.favorite.clone(),
             phrases: self.phrases.clone(),
         }
@@ -331,72 +363,6 @@ pub fn builtin() -> Vec<Skin> {
             phrases: phrases(&["Groovy RAM, baby!", "Disco bonk!", "Free memory, free spirit."]),
             ..Default::default()
         },
-        // Fan tribute to the Tamil comedy legend Vadivelu and his famous
-        // flailing escape run. Fan-made, not affiliated with him.
-        Skin {
-            id: "vadivelu_sprint".into(),
-            name: "Vadivelu: Yellow Shirt Sprint".into(),
-            author: "RamRonin (fan tribute)".into(),
-            body: "#6e4429".into(),
-            head_fill: s("#c68a5e"),
-            curls: s("#17110d"),
-            mustache: s("#17110d"),
-            shirt: s("#f2c230"),
-            vest: s("#d42a2a"),
-            lungi: s("#262b40"),
-            lungi_trim: s("#b9bccb"),
-            chain: s("#e8c04a"),
-            gait: "panic".into(),
-            favorite: "chicken".into(),
-            speed: 1.15,
-            phrases: phrases(&[
-                "Aaha... kilambitaangayaa!",
-                "Vada pochey! (and so did your RAM)",
-                "Mudiyala... RAM mudiyala!",
-                "Edhaiyum plan panni pannanum.",
-                "Ennama ipdi panreengalema?",
-            ]),
-            ..Default::default()
-        },
-        Skin {
-            id: "vadivelu_lungi".into(),
-            name: "Vadivelu: Lungi Don".into(),
-            author: "RamRonin (fan tribute)".into(),
-            body: "#6e4429".into(),
-            head_fill: s("#c68a5e"),
-            curls: s("#17110d"),
-            mustache: s("#17110d"),
-            shirt: s("#f3f1ea"),
-            lungi: s("#2f7a4c"),
-            lungi_trim: s("#f2c230"),
-            scarf: s("#c0392b"),
-            gait: "panic".into(),
-            favorite: "mallet".into(),
-            speed: 1.1,
-            phrases: phrases(&["Naanum rowdy dhaan!", "Ennama ipdi panreengalema?", "Aaha... kilambitaangayaa!", "Mudiyala!"]),
-            ..Default::default()
-        },
-        Skin {
-            id: "vadivelu_emperor".into(),
-            name: "Vadivelu: Emperor".into(),
-            author: "RamRonin (fan tribute)".into(),
-            body: "#6e4429".into(),
-            head_fill: s("#c68a5e"),
-            curls: s("#17110d"),
-            mustache: s("#17110d"),
-            mustache_style: "twirl".into(),
-            crown: s("#e8b923"),
-            shirt: s("#8e1b3a"),
-            vest: s("#e8c04a"),
-            lungi: s("#efe3c2"),
-            lungi_trim: s("#c9a227"),
-            chain: s("#e8c04a"),
-            gait: "panic".into(),
-            favorite: "whip".into(),
-            speed: 0.95,
-            phrases: phrases(&["Royal decree: close some tabs!", "The emperor demands free RAM!", "Mudiyala!", "Aaha... kilambitaangayaa!"]),
-            ..Default::default()
-        },
     ]
 }
 
@@ -476,7 +442,7 @@ mod tests {
             }
             n += list.len();
         }
-        assert_eq!(n, 3);
+        assert_eq!(n, 6);
     }
 
     #[test]

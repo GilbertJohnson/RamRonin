@@ -51,6 +51,7 @@ const ID_LB_KEPT: u16 = 118;
 const ID_ADD_TEAMS: u16 = 120;
 const ID_TAB: u16 = 121;
 const ID_KEEP_TEST: u16 = 122;
+const ID_IMPORT_GIF: u16 = 123;
 const ID_BIND_BASE: u16 = 2000;
 
 type GetB = fn(&Config) -> bool;
@@ -388,6 +389,7 @@ fn build(hwnd: HWND) -> Cc {
     b.button(24, y0 + 372, 140, 30, "Import pack...", ID_IMPORT);
     b.button(174, y0 + 372, 140, 30, "Open packs folder", ID_PACKS);
     b.button(24, y0 + 408, 140, 30, "Reload packs", ID_RELOAD);
+    b.button(174, y0 + 408, 140, 30, "Import GIF...", ID_IMPORT_GIF);
     let x1 = 344;
     b.heading(x1, y0, 460, "Look & feel");
     b.slider(x1, y0 + 28, 460, "Size", 50, 250, 5, |c| c.size_pct as i32, |c, v| c.size_pct = v as u32, pct);
@@ -411,9 +413,9 @@ fn build(hwnd: HWND) -> Cc {
         460,
         130,
         "Character packs: a pack is a small .json file describing a character \
-(colours, head, eyes, headband, scarf, afro, beard, cap, antenna, aura colour, speed, \
-favourite weapon and catch-phrases). Import one here or drop it into the packs folder. \
-Examples live in the project's packs-examples folder.",
+(colours, head, eyes, clothes, speed, favourite weapon and catch-phrases). \
+Import GIF... turns any animated GIF into a character that runs, perches and whops like the ninja. \
+GIFs with a plain or transparent background look best; others are shown as a sticker.",
     );
 
     // ---------------- page 1: Props & Jutsu ----------------
@@ -856,6 +858,15 @@ fn on_command(id: u16, code: u16, ctl: HWND) {
         ID_IMPORT => {
             if let Some(p) = system::open_file_dialog(me, "Import a RamRonin character pack", "Character packs (*.json)\0*.json\0All files\0*.*\0") {
                 if let Some(id) = system::import_pack(me, &p) {
+                    crate::reload_skins();
+                    cfg_update(|c| c.skin = id);
+                    sync_from_cfg();
+                }
+            }
+        }
+        ID_IMPORT_GIF => {
+            if let Some(p) = system::open_file_dialog(me, "Import an animated GIF as a character", "Animated GIF (*.gif)\0*.gif\0") {
+                if let Some(id) = system::import_gif(me, &p) {
                     crate::reload_skins();
                     cfg_update(|c| c.skin = id);
                     sync_from_cfg();
