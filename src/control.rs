@@ -1027,11 +1027,7 @@ fn draw_demo(g: &mut Gfx, w: f32, h: f32, t: f32, sc: f32, compact: bool) {
         poses::stance(t)
     } else if cycle < 5.0 {
         vel = (520.0, 0.0);
-        if shinobi || look.ninja_run {
-            poses::ninja_run(phase)
-        } else {
-            poses::run(phase)
-        }
+        look.sprint(shinobi || look.ninja_run, phase)
     } else if cycle < 6.0 {
         let u = cycle - 5.0;
         let mut p = poses::tuck(-360.0 * ease_io(u));

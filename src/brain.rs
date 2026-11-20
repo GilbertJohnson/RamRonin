@@ -1713,7 +1713,12 @@ impl Ninja {
                 };
                 let target = if self.x - l > r - self.x { l + 30.0 } else { r - 30.0 };
                 let gait = if self.shinobi || w.look.ninja_run { Gait::Ninja } else { Gait::Run };
-                return vec![Act::Say { lines: vec![self.rng.pick(&["SPRINT!", "Gotta go fast!", "Taskbar marathon!"]).to_string()], dur: 1.4, think: false }, Act::Walk { tx: target, gait }, Act::Taunt { dur: 0.8 }];
+                let shout: &[&str] = if w.look.gait == crate::skins::Gait::Panic {
+                    &["Aaha... kilambitaangayaa!", "Odu! Odu!", "Escape! RAM is coming!"]
+                } else {
+                    &["SPRINT!", "Gotta go fast!", "Taskbar marathon!"]
+                };
+                return vec![Act::Say { lines: vec![self.rng.pick(shout).to_string()], dur: 1.4, think: false }, Act::Walk { tx: target, gait }, Act::Taunt { dur: 0.8 }];
             }
             14 => {
                 // pick a window top and insist on climbing it
@@ -2076,8 +2081,8 @@ impl Ninja {
                     Gait::Walk => poses::walk(self.phase),
                     Gait::Sneak => poses::sneak(self.phase),
                     Gait::Moonwalk => poses::walk(-self.phase),
-                    Gait::Run => poses::run(self.phase),
-                    Gait::Ninja => poses::ninja_run(self.phase),
+                    Gait::Run => w.look.sprint(false, self.phase),
+                    Gait::Ninja => w.look.sprint(true, self.phase),
                     Gait::Horse => poses::ride(t),
                     Gait::Car => poses::drive(t),
                     Gait::Pogo => poses::pogo(),

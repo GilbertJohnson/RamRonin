@@ -393,12 +393,28 @@ fn append(m: HMENU, id: usize, text: &str, checked: bool, enabled: bool) {
     }
 }
 
+thread_local! {
+    /// when the last popup menu closed (to ignore an immediate re-open)
+    static MENU_CLOSED: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// A pick made this soon after the menu appeared is the second half of a
+/// double-click, not a choice: the menu opens right under the pointer.
+const MENU_GUARD: Duration = Duration::from_millis(350);
+
 pub fn show_menu(host: HWND) {
+    if MENU_CLOSED.with(|c| c.get()).map(|t| t.elapsed() < MENU_GUARD).unwrap_or(false) {
+        return;
+    }
     let cfg = cfg_get(|c| c.clone());
     let (skins, hidden) = with_app(|a| (a.skins.iter().map(|s| (s.id.clone(), s.name.clone())).collect::<Vec<_>>(), a.hidden)).unwrap_or_default();
     unsafe {
         // compact: a few top-level entries, everything else in sub-menus
         let m = CreatePopupMenu();
+        // inert title line: whatever sits under the pointer when the menu
+        // opens downward is harmless
+        append(m, 0, &format!("RamRonin {}", system::VERSION), false, false);
+        AppendMenuW(m, MF_SEPARATOR, 0, std::ptr::null());
         append(m, CMD_CONTROL, "Control Center...\tCtrl+Alt+R", false, true);
         let ch = CreatePopupMenu();
         for (i, (id, name)) in skins.iter().enumerate() {
@@ -427,9 +443,15 @@ pub fn show_menu(host: HWND) {
         append(m, CMD_EXIT, "Exit RamRonin", false, true);
         let (cx, cy) = win::cursor_pos();
         SetForegroundWindow(host);
-        let cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, cx, cy, 0, host, std::ptr::null()) as usize;
+        let opened = Instant::now();
+        let mut cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, cx, cy, 0, host, std::ptr::null()) as usize;
         PostMessageW(host, WM_NULL, 0, 0);
         DestroyMenu(m);
+        MENU_CLOSED.with(|c| c.set(Some(Instant::now())));
+        if cmd != 0 && opened.elapsed() < MENU_GUARD {
+            diag::log(format!("ignored menu pick {} made {} ms after opening (double-click)", cmd, opened.elapsed().as_millis()));
+            cmd = 0;
+        }
         handle_cmd(cmd);
     }
 }

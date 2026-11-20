@@ -113,7 +113,11 @@ app ("Stay awake, Teams!").
 
 ## Characters and packs (extensible)
 Built-in characters: **Shinobi (red band)** (the default), Crimson Eye,
-Stickman Fighter, Shadow Ninja, Robo-Bonk 3000, Grandpa Rampage and Neon Disco.
+Stickman Fighter, Shadow Ninja, Robo-Bonk 3000, Grandpa Rampage, Neon Disco,
+and three **Vadivelu** characters (Yellow Shirt Sprint, Lungi Don, Emperor).
+The Vadivelu characters do his famous arms-flailing escape run whenever they
+run, and shout Tamil catchphrases. They are a fan tribute to the Tamil comedy
+legend, not affiliated with him.
 
 A character is pure data, so new ones can be added without rebuilding. Put a
 `.json` file in `%APPDATA%\RamRonin\packs`, or use *Control Center ▸ Import
@@ -135,6 +139,11 @@ the exe and copied into that folder on first run:
 
 - `favorite` can be `whip`, `mallet`, `wrench`, `crowbar`, `gloves`,
   `chicken`, `orb`, `shuriken` or `kunai`.
+- Optional costume fields: `curls` (long curly hair), `mustache` (+
+  `"mustache_style": "thick" | "twirl"`), `shirt`, `vest`, `lungi`,
+  `lungi_trim`, `chain` and `crown`, all colours.
+- `"gait"`: `"ninja"` (arms-back sprint), `"run"`, or `"panic"` (the
+  arms-flailing comedy escape run).
 - One file can also hold several characters: `{"characters": [ ... ]}`.
 - See [packs-examples/](packs-examples/).
 

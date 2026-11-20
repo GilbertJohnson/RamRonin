@@ -38,6 +38,26 @@ pub struct Skin {
     pub size: f32,
     /// Uses the arms-back ninja sprint.
     pub ninja_run: bool,
+    /// Running style: "ninja" (arms-back sprint), "run" (normal), "panic"
+    /// (arms flailing, knees high, comedy escape run). Empty: `ninja_run`
+    /// decides.
+    pub gait: String,
+    /// Long curly hair down to the neck.
+    pub curls: Option<String>,
+    pub mustache: Option<String>,
+    /// "thick" | "twirl"
+    pub mustache_style: String,
+    /// Short-sleeved shirt.
+    pub shirt: Option<String>,
+    /// Undershirt / vest showing at an open collar.
+    pub vest: Option<String>,
+    /// Lungi / dhoti, folded up above the knees.
+    pub lungi: Option<String>,
+    /// Border stripe on the lungi.
+    pub lungi_trim: Option<String>,
+    /// Gold chain.
+    pub chain: Option<String>,
+    pub crown: Option<String>,
     /// Favourite weapon: whip|mallet|wrench|crowbar|gloves|chicken|orb|shuriken|kunai
     pub favorite: String,
     pub phrases: Vec<String>,
@@ -66,10 +86,27 @@ impl Default for Skin {
             speed: 1.0,
             size: 1.0,
             ninja_run: false,
+            gait: String::new(),
+            curls: None,
+            mustache: None,
+            mustache_style: "thick".into(),
+            shirt: None,
+            vest: None,
+            lungi: None,
+            lungi_trim: None,
+            chain: None,
+            crown: None,
             favorite: String::new(),
             phrases: vec![],
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Gait {
+    Run,
+    Ninja,
+    Panic,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -109,8 +146,30 @@ pub struct Look {
     pub speed: f32,
     pub size: f32,
     pub ninja_run: bool,
+    pub gait: Gait,
+    pub curls: Option<Col>,
+    pub mustache: Option<Col>,
+    pub twirl: bool,
+    pub shirt: Option<Col>,
+    pub vest: Option<Col>,
+    pub lungi: Option<Col>,
+    pub lungi_trim: Option<Col>,
+    pub chain: Option<Col>,
+    pub crown: Option<Col>,
     pub favorite: String,
     pub phrases: Vec<String>,
+}
+
+impl Look {
+    /// The running pose to use for a run/sprint picked by the behaviour code.
+    pub fn sprint(&self, ninja: bool, phase: f32) -> crate::rig::Pose {
+        use crate::rig::poses;
+        match self.gait {
+            Gait::Panic => poses::panic_run(phase),
+            _ if ninja => poses::ninja_run(phase),
+            _ => poses::run(phase),
+        }
+    }
 }
 
 impl Skin {
@@ -146,7 +205,23 @@ impl Skin {
             aura: c(&self.aura).unwrap_or(Col::rgb(90, 190, 255)),
             speed: self.speed.clamp(0.3, 3.0),
             size: self.size.clamp(0.4, 3.0),
-            ninja_run: self.ninja_run,
+            ninja_run: self.ninja_run || self.gait == "ninja",
+            gait: match self.gait.as_str() {
+                "panic" => Gait::Panic,
+                "ninja" => Gait::Ninja,
+                "run" => Gait::Run,
+                _ if self.ninja_run => Gait::Ninja,
+                _ => Gait::Run,
+            },
+            curls: c(&self.curls),
+            mustache: c(&self.mustache),
+            twirl: self.mustache_style == "twirl",
+            shirt: c(&self.shirt),
+            vest: c(&self.vest),
+            lungi: c(&self.lungi),
+            lungi_trim: c(&self.lungi_trim),
+            chain: c(&self.chain),
+            crown: c(&self.crown),
             favorite: self.favorite.clone(),
             phrases: self.phrases.clone(),
         }
@@ -254,6 +329,72 @@ pub fn builtin() -> Vec<Skin> {
             favorite: "chicken".into(),
             speed: 1.1,
             phrases: phrases(&["Groovy RAM, baby!", "Disco bonk!", "Free memory, free spirit."]),
+            ..Default::default()
+        },
+        // Fan tribute to the Tamil comedy legend Vadivelu and his famous
+        // flailing escape run. Fan-made, not affiliated with him.
+        Skin {
+            id: "vadivelu_sprint".into(),
+            name: "Vadivelu: Yellow Shirt Sprint".into(),
+            author: "RamRonin (fan tribute)".into(),
+            body: "#6e4429".into(),
+            head_fill: s("#c68a5e"),
+            curls: s("#17110d"),
+            mustache: s("#17110d"),
+            shirt: s("#f2c230"),
+            vest: s("#d42a2a"),
+            lungi: s("#262b40"),
+            lungi_trim: s("#b9bccb"),
+            chain: s("#e8c04a"),
+            gait: "panic".into(),
+            favorite: "chicken".into(),
+            speed: 1.15,
+            phrases: phrases(&[
+                "Aaha... kilambitaangayaa!",
+                "Vada pochey! (and so did your RAM)",
+                "Mudiyala... RAM mudiyala!",
+                "Edhaiyum plan panni pannanum.",
+                "Ennama ipdi panreengalema?",
+            ]),
+            ..Default::default()
+        },
+        Skin {
+            id: "vadivelu_lungi".into(),
+            name: "Vadivelu: Lungi Don".into(),
+            author: "RamRonin (fan tribute)".into(),
+            body: "#6e4429".into(),
+            head_fill: s("#c68a5e"),
+            curls: s("#17110d"),
+            mustache: s("#17110d"),
+            shirt: s("#f3f1ea"),
+            lungi: s("#2f7a4c"),
+            lungi_trim: s("#f2c230"),
+            scarf: s("#c0392b"),
+            gait: "panic".into(),
+            favorite: "mallet".into(),
+            speed: 1.1,
+            phrases: phrases(&["Naanum rowdy dhaan!", "Ennama ipdi panreengalema?", "Aaha... kilambitaangayaa!", "Mudiyala!"]),
+            ..Default::default()
+        },
+        Skin {
+            id: "vadivelu_emperor".into(),
+            name: "Vadivelu: Emperor".into(),
+            author: "RamRonin (fan tribute)".into(),
+            body: "#6e4429".into(),
+            head_fill: s("#c68a5e"),
+            curls: s("#17110d"),
+            mustache: s("#17110d"),
+            mustache_style: "twirl".into(),
+            crown: s("#e8b923"),
+            shirt: s("#8e1b3a"),
+            vest: s("#e8c04a"),
+            lungi: s("#efe3c2"),
+            lungi_trim: s("#c9a227"),
+            chain: s("#e8c04a"),
+            gait: "panic".into(),
+            favorite: "whip".into(),
+            speed: 0.95,
+            phrases: phrases(&["Royal decree: close some tabs!", "The emperor demands free RAM!", "Mudiyala!", "Aaha... kilambitaangayaa!"]),
             ..Default::default()
         },
     ]
