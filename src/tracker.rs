@@ -93,7 +93,9 @@ impl Tracker {
             segs: vec![],
             vs: RectI::default(),
             fresh: false,
-            last: Instant::now() - Duration::from_secs(5),
+            // refresh() below sets this; avoid `Instant::now() - 5s`, which
+            // panics if Windows booted less than 5 seconds ago
+            last: Instant::now(),
             last_mon: Instant::now(),
             names: HashMap::new(),
             names_at: Instant::now(),

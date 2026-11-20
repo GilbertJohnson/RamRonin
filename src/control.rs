@@ -89,7 +89,6 @@ struct Cc {
     mem_lines: Vec<String>,
     running_lines: Vec<String>,
     kept_lines: Vec<String>,
-    t0: Instant,
     last_refresh: Instant,
 }
 
@@ -607,7 +606,6 @@ Your settings and character packs are kept. (Online updates from GitHub can plug
         mem_lines: vec![],
         running_lines: vec![],
         kept_lines: vec![],
-        t0: Instant::now(),
         last_refresh: Instant::now(),
     }
 }
@@ -1059,7 +1057,7 @@ fn draw_demo(g: &mut Gfx, w: f32, h: f32, t: f32, sc: f32, compact: bool) {
             g.line((root.0 - 40.0 * s - off - 50.0 * s, y), (root.0 - 40.0 * s - off, y), 1.6 * sc, Col::rgba(120, 120, 130, 120));
         }
     }
-    let fx = FigFx { t, vel, tomoe: shinobi && eye && (item != Item::None || vel.0 > 0.0 || (cycle >= 8.6 && cycle < 11.4)), chaos: 0.6 };
+    let fx = FigFx { t, vel, tomoe: shinobi && eye && (item != Item::None || vel.0 > 0.0 || (cycle >= 8.6 && cycle < 11.4)) };
     rig::draw_figure(g, &sk, &look, &fx);
     props::draw_item(g, item, &sk, t, swing);
     if !compact && shinobi && (8.6..11.4).contains(&cycle) {

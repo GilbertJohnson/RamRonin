@@ -839,7 +839,6 @@ pub struct FigFx {
     pub vel: P,
     /// force the red tomoe eye (Shinobi edition moments)
     pub tomoe: bool,
-    pub chaos: f32,
 }
 
 fn ribbon(sk: &Skel, from: P, len: f32, width: f32, col: Col, fx: &FigFx, phase: f32, g: &mut Gfx) {

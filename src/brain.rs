@@ -2289,7 +2289,7 @@ impl Ninja {
         let look = w.look;
         let s = self.s;
         let t = self.t;
-        let figfx = FigFx { t, vel: self.vel, tomoe: lay.tomoe, chaos: self.chaos };
+        let figfx = FigFx { t, vel: self.vel, tomoe: lay.tomoe };
 
         // afterimages
         if !lay.hidden {

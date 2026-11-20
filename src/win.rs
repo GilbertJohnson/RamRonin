@@ -42,10 +42,6 @@ pub struct Monitor {
     pub primary: bool,
 }
 
-pub fn hwnd(h: isize) -> HWND {
-    h as HWND
-}
-
 /// Visual bounds of a window (without the invisible resize borders of Win10/11).
 pub fn window_rect(h: HWND) -> Option<RectI> {
     unsafe {

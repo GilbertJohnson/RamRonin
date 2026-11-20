@@ -34,7 +34,9 @@ pub fn spawn(shared: Shared, mem: memory::Shared, stop: Arc<AtomicBool>) {
         .name("ramronin-keepactive".into())
         .spawn(move || {
             let mut awake_set = false;
-            let mut last_beat = Instant::now() - Duration::from_secs(3600);
+            // None = no tap yet. (Not `Instant::now() - 1h`: Instant counts
+            // from boot on Windows, so that panics in the first hour of uptime.)
+            let mut last_beat: Option<Instant> = None;
             let mut paths: HashMap<String, String> = HashMap::new();
             let mut gone_since: HashMap<String, Instant> = HashMap::new();
             let mut last_relaunch: HashMap<String, Instant> = HashMap::new();
@@ -71,9 +73,9 @@ pub fn spawn(shared: Shared, mem: memory::Shared, stop: Arc<AtomicBool>) {
                 let mut beat = false;
                 if active {
                     let idle = win::idle_ms() / 1000;
-                    if idle >= cfg.idle_s && last_beat.elapsed().as_secs() >= cfg.interval_s.max(10) as u64 {
+                    if idle >= cfg.idle_s && last_beat.map(|b| b.elapsed().as_secs() >= cfg.interval_s.max(10) as u64).unwrap_or(true) {
                         win::tap_f15();
-                        last_beat = Instant::now();
+                        last_beat = Some(Instant::now());
                         beat = true;
                     }
                     note = if idle < cfg.idle_s {
