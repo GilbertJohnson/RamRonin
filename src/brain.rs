@@ -9,7 +9,8 @@ use crate::memory::{MemSnap, ProcStat};
 use crate::props::{self, Item};
 use crate::rig::{self, poses, FigFx, Pose, Skel};
 use crate::skins::Look;
-use crate::tracker::{Surf, Tracker};
+use crate::taskbar::{self, TbButton};
+use crate::tracker::{Seg, Surf, Tracker};
 use crate::util::*;
 use crate::win::RectI;
 use std::collections::{HashMap, VecDeque};
@@ -80,6 +81,36 @@ pub enum Act {
     Stumble { dur: f32 },
     Land { dur: f32 },
     Dragged,
+    /// climb up (or down) the left (side -1) / right (+1) wall of a window
+    Climb { h: isize, side: f32, down: bool },
+    /// fast asleep on the taskbar until the user comes back
+    Rest,
+    /// red-eye stare (no attack attached)
+    Glare { dur: f32 },
+}
+
+/// What an attack is aimed at.
+#[derive(Clone, Copy, Debug)]
+pub enum Target {
+    /// a window (aim at its top edge, near the ninja)
+    Win(isize),
+    /// a fixed rectangle on screen (a taskbar / tray button)
+    Rect(RectI),
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum CloneK {
+    Dance,
+    Whop,
+    Flips,
+    Handstand,
+    Pace,
+    Orb,
+    Kunai,
+    Meditate,
+    Headspin,
+    Taunt,
+    Sit,
 }
 
 pub struct Cloud {
@@ -89,10 +120,19 @@ pub struct Cloud {
     pub think: bool,
 }
 
+/// A shadow clone: lives on its own spot for ~10 s doing its own thing.
 struct CloneN {
-    dx: f32,
+    spot: Spot,
+    home: f32,
+    k: CloneK,
+    item: Item,
+    facing: f32,
     t: f32,
     dur: f32,
+    phase: f32,
+    cd: f32,
+    /// resolved ground point this frame
+    at: Option<P>,
 }
 
 pub struct World<'a> {
@@ -100,6 +140,18 @@ pub struct World<'a> {
     pub mem: &'a MemSnap,
     pub cfg: &'a Config,
     pub look: &'a Look,
+    /// taskbar / tray buttons (name + rect)
+    pub tb: &'a [TbButton],
+    /// seconds since the user last touched mouse / keyboard
+    pub user_idle: f32,
+}
+
+/// One clone, ready to draw.
+pub struct CloneDraw {
+    pub skel: Skel,
+    pub item: Item,
+    pub swing: f32,
+    pub orb: bool,
 }
 
 /// Everything needed to draw one frame (computed before drawing so the
@@ -112,7 +164,7 @@ pub struct Layout {
     pub ground: P,
     pub hidden: bool,
     pub cloud: Option<(f32, f32, f32, f32)>,
-    pub clones: Vec<Skel>,
+    pub clones: Vec<CloneDraw>,
     pub tomoe: bool,
     pub swing: f32,
 }
@@ -154,6 +206,15 @@ pub struct Ninja {
     chaos: f32,
     shinobi: bool,
     clouds_on: bool,
+    /// what the current attack is aimed at
+    target: Option<Target>,
+    /// last roam choices (to avoid repeating the same thing)
+    recent: VecDeque<u8>,
+    /// earliest time for the next show-off jutsu / stunt / ride
+    next_jutsu: f32,
+    next_stunt: f32,
+    next_ride: f32,
+    car_col: Col,
 }
 
 fn sgn(v: f32) -> f32 {
@@ -206,6 +267,12 @@ impl Ninja {
             chaos: 0.6,
             shinobi: true,
             clouds_on: true,
+            target: None,
+            recent: VecDeque::new(),
+            next_jutsu: 25.0,
+            next_stunt: 10.0,
+            next_ride: 30.0,
+            car_col: props::CAR_COLORS[0],
         }
     }
 
@@ -262,24 +329,21 @@ impl Ninja {
                 let (l, r) = tr.floor_range(m);
                 Some((spot.x.clamp(l + 10.0, r - 10.0), tr.floor_y(m)))
             }
-            Surf::Win(h) => {
-                let (r, maxed) = Tracker::live_rect(h)?;
-                if maxed {
-                    return None;
-                }
-                Some(((r.l as f32 + spot.x).clamp(r.l as f32 + 8.0, r.r as f32 - 8.0), r.t as f32))
+            Surf::Win(h, dy) => {
+                let (y, l, r, _) = Tracker::live_surface(h, dy)?;
+                Some(((l + spot.x).clamp(l + 8.0, r - 8.0), y))
             }
         }
     }
 
     fn set_on(&mut self, surf: Surf, p: P) -> bool {
         match surf {
-            Surf::Win(h) => {
-                let Some((r, _)) = Tracker::live_rect(h) else { return false };
-                self.last_rect = Some(r);
-                self.x = p.0.clamp(r.l as f32 + 8.0, r.r as f32 - 8.0);
-                self.y = r.t as f32;
-                self.off = self.x - r.l as f32;
+            Surf::Win(h, dy) => {
+                let Some((y, l, r, rect)) = Tracker::live_surface(h, dy) else { return false };
+                self.last_rect = Some(rect);
+                self.x = p.0.clamp(l + 8.0, r - 8.0);
+                self.y = y;
+                self.off = self.x - l;
             }
             Surf::Floor(_) => {
                 self.x = p.0;
@@ -294,8 +358,8 @@ impl Ninja {
     }
 
     fn fall_off(&mut self, quip: Option<&[&str]>) {
-        if let Some(Surf::Win(h)) = self.on {
-            self.no_land = Some((Surf::Win(h), self.t + 0.35));
+        if let Some(s @ Surf::Win(..)) = self.on {
+            self.no_land = Some((s, self.t + 0.35));
         }
         self.on = None;
         self.plan.clear();
@@ -309,17 +373,18 @@ impl Ninja {
     }
 
     fn busy_with_motion(&self) -> bool {
-        matches!(self.act, Act::Fall | Act::Dragged | Act::Leap { .. })
+        matches!(self.act, Act::Fall | Act::Dragged | Act::Leap { .. } | Act::Climb { .. })
     }
 
     fn follow_surface(&mut self, dt: f32, w: &World) {
         let tr = w.tr;
         match self.on {
-            Some(Surf::Win(h)) => match Tracker::live_rect(h) {
+            Some(Surf::Win(h, dy)) => match Tracker::live_rect(h) {
                 None => self.fall_off(Some(&["Where'd it go?!", "WHOA-", "The floor left me!"])),
                 Some((r, maxed)) => {
-                    let mon = &tr.mons[tr.mon_at((r.l + r.r) as f32 / 2.0, r.t as f32 + 5.0)];
-                    if maxed || r.t < mon.rect.t + 30 || r.t > mon.work.b - 20 {
+                    let sy = (r.t + dy) as f32;
+                    let mon = &tr.mons[tr.mon_at((r.l + r.r) as f32 / 2.0, sy + 5.0)];
+                    if (dy == 0 && (maxed || r.t < mon.rect.t + 30)) || sy > mon.work.b as f32 - 20.0 {
                         self.fall_off(Some(&["WHOA!", "Maximized?! RUDE.", "AAAAH"]));
                         return;
                     }
@@ -360,10 +425,11 @@ impl Ninja {
                         self.off = m;
                     }
                     self.x = r.l as f32 + self.off;
-                    self.y = r.t as f32;
+                    self.y = sy;
                     self.last_rect = Some(r);
-                    // someone put a window on top of my spot?
-                    if tr.fresh && tr.win(h).is_some() && tr.seg_at(Surf::Win(h), self.x, 16.0 * self.ui).is_none() {
+                    // someone put a window on top of my spot (or the pane I
+                    // stand on went away)?
+                    if tr.fresh && tr.win(h).is_some() && tr.seg_at(Surf::Win(h, dy), self.x, 16.0 * self.ui).is_none() {
                         self.fall_off(Some(&["Rude!", "HEY, I was there!", "Squished!"]));
                     }
                 }
@@ -386,8 +452,8 @@ impl Ninja {
                 let (l, r) = tr.floor_range(i);
                 (l + m, r - m)
             }
-            Some(Surf::Win(h)) => {
-                if let Some(seg) = tr.seg_at(Surf::Win(h), self.x, 20.0) {
+            Some(s @ Surf::Win(..)) => {
+                if let Some(seg) = tr.seg_at(s, self.x, 20.0) {
                     (seg.x0 + m, seg.x1 - m)
                 } else if let Some(r) = self.last_rect {
                     (r.l as f32 + m, r.r as f32 - m)
@@ -419,7 +485,7 @@ impl Ninja {
             self.follow_surface(dt, w);
         }
         if w.cfg.paused {
-            if !matches!(self.act, Act::Fall | Act::Dragged | Act::Meditate | Act::Land { .. }) {
+            if !matches!(self.act, Act::Fall | Act::Dragged | Act::Meditate | Act::Land { .. } | Act::Climb { .. } | Act::Leap { .. }) {
                 self.plan.clear();
                 self.begin(Act::Meditate, w);
             }
@@ -456,17 +522,7 @@ impl Ninja {
                 self.cloud = None;
             }
         }
-        let mut poofs = vec![];
-        for c in self.clones.iter_mut() {
-            c.t += dt;
-            if c.t >= c.dur {
-                poofs.push((self.x + c.dx, self.y - 20.0 * self.s));
-            }
-        }
-        self.clones.retain(|c| c.t < c.dur);
-        for p in poofs {
-            self.fx.push(Fx::new(Kind::Poof, p, 0.45, self.s));
-        }
+        self.update_clones(dt, w);
         for tr in self.trail.iter_mut() {
             tr.1 += dt;
         }
@@ -475,6 +531,161 @@ impl Ninja {
             e.1 += dt;
         }
         self.eye_trail.retain(|e| e.1 < 0.18);
+    }
+
+    // ------------------------------------------------------------------
+    // shadow clones: each one does its own thing for 10 s
+    // ------------------------------------------------------------------
+
+    fn spawn_clones(&mut self, w: &World) {
+        let Some(here) = self.spot_here() else { return };
+        let (lo, hi) = self.walk_range(w.tr);
+        let n = 2 + (self.chaos > 0.45) as usize + (self.chaos > 0.8) as usize;
+        let mut kinds = vec![
+            CloneK::Dance,
+            CloneK::Whop,
+            CloneK::Flips,
+            CloneK::Handstand,
+            CloneK::Pace,
+            CloneK::Meditate,
+            CloneK::Headspin,
+            CloneK::Taunt,
+            CloneK::Sit,
+        ];
+        if self.shinobi {
+            kinds.push(CloneK::Orb);
+            kinds.push(CloneK::Kunai);
+        }
+        for i in (1..kinds.len()).rev() {
+            let j = self.rng.idx(i + 1);
+            kinds.swap(i, j);
+        }
+        let s = self.s;
+        let base = self.x - here.x; // window left (0 for floors)
+        for i in 0..n {
+            let side = if i % 2 == 0 { -1.0 } else { 1.0 };
+            let ax = (self.x + side * (55.0 + 55.0 * (i / 2) as f32 + self.rng.range(0.0, 25.0)) * s).clamp(lo, hi.max(lo));
+            let k = kinds[i % kinds.len()];
+            let item = match k {
+                CloneK::Whop => self.pick_weapon(w),
+                CloneK::Kunai => Item::Kunai,
+                _ => Item::None,
+            };
+            let x = ax - base;
+            let facing = if k == CloneK::Whop || k == CloneK::Kunai { -side } else { self.rng.sign() };
+            self.clones.push(CloneN {
+                spot: Spot { surf: here.surf, x },
+                home: x,
+                k,
+                item,
+                facing,
+                t: 0.0,
+                dur: 10.0,
+                phase: self.rng.range(0.0, 6.0),
+                cd: self.rng.range(0.2, 1.0),
+                at: None,
+            });
+            self.fx.push(Fx::new(Kind::Poof, (ax, self.y - 25.0 * s), 0.5, s));
+        }
+    }
+
+    fn update_clones(&mut self, dt: f32, w: &World) {
+        if self.clones.is_empty() {
+            return;
+        }
+        let s = self.s;
+        let mut fx = vec![];
+        let mut clones = std::mem::take(&mut self.clones);
+        for c in clones.iter_mut() {
+            let t0 = c.t;
+            c.t += dt;
+            c.cd -= dt;
+            if c.k == CloneK::Pace {
+                let off = (c.t * 1.2).sin() * 70.0 * s;
+                c.facing = sgn((c.t * 1.2).cos());
+                c.spot.x = c.home + off;
+                c.phase += dt * 8.0;
+            }
+            c.at = self.resolve(c.spot, w.tr);
+            let Some(p) = c.at else {
+                c.t = c.dur;
+                continue;
+            };
+            match c.k {
+                CloneK::Whop => {
+                    // same swing timing as the pose: hit at 55% of each 0.6 s swing
+                    let (a, b) = ((t0 % 0.6) / 0.6, (c.t % 0.6) / 0.6);
+                    if (a < 0.55 && b >= 0.55) || (b < a && b >= 0.55) {
+                        let impact = (p.0 + c.facing * 30.0 * s, p.1 - 30.0 * s);
+                        let word = self.rng.pick(c.item.hit_word()).to_string();
+                        fx.push(Fx::new(Kind::Burst { word, col: Col::rgb(255, 225, 60) }, impact, 0.7, s * 0.8).rot(self.rng.range(-0.3, 0.3)));
+                    }
+                }
+                CloneK::Kunai => {
+                    let (a, b) = ((t0 % 0.9) / 0.9, (c.t % 0.9) / 0.9);
+                    if b < a {
+                        let from = (p.0 + c.facing * 14.0 * s, p.1 - 45.0 * s);
+                        let to = (p.0 + c.facing * self.rng.range(60.0, 120.0) * s, p.1 + 3.0 * s);
+                        fx.push(Fx::new(Kind::Kunai { to, from, stick: 0.0 }, from, 1.6, s));
+                    }
+                }
+                CloneK::Flips | CloneK::Taunt if c.cd <= 0.0 => {
+                    c.cd = 2.0;
+                    if self.rng.chance(0.5) {
+                        c.facing = -c.facing;
+                    }
+                }
+                _ => {}
+            }
+            if c.t >= c.dur {
+                fx.push(Fx::new(Kind::Poof, (p.0, p.1 - 25.0 * s), 0.45, s));
+            }
+        }
+        clones.retain(|c| c.t < c.dur);
+        self.clones = clones;
+        self.fx.extend(fx);
+    }
+
+    fn clone_pose(&self, c: &CloneN) -> (Pose, Item, f32, bool) {
+        let t = c.t + c.phase;
+        match c.k {
+            CloneK::Dance => (poses::dance(t, self.chaos), Item::None, 0.0, false),
+            CloneK::Whop => {
+                let sw = (c.t % 0.6) / 0.6;
+                let p = if c.item == Item::Gloves { poses::punches(sw) } else { poses::swing(sw) };
+                (p, c.item, sw, false)
+            }
+            CloneK::Flips => {
+                let u = (c.t % 2.0) / 2.0;
+                if u < 0.45 {
+                    let k = u / 0.45;
+                    let mut p = poses::tuck(-360.0 * ease_io(k));
+                    p.dy = -(k * PI).sin() * 42.0;
+                    (p, Item::None, 0.0, false)
+                } else {
+                    (poses::taunt(t), Item::None, 0.0, false)
+                }
+            }
+            CloneK::Handstand => (poses::handstand(t), Item::None, 0.0, false),
+            CloneK::Pace => (poses::walk(c.phase), Item::None, 0.0, false),
+            CloneK::Orb => (poses::charge(t), Item::None, 0.0, true),
+            CloneK::Kunai => {
+                let u = (c.t % 0.9) / 0.9;
+                if u < 0.4 {
+                    (poses::throw(u / 0.4), Item::Kunai, 0.0, false)
+                } else {
+                    (poses::stance(t), Item::Kunai, 0.0, false)
+                }
+            }
+            CloneK::Meditate => (poses::meditate(t), Item::None, 0.0, false),
+            CloneK::Headspin => (poses::headspin(t), Item::None, 0.0, false),
+            CloneK::Taunt => (poses::taunt(t), Item::None, 0.0, false),
+            CloneK::Sit => (poses::sit(t), Item::None, 0.0, false),
+        }
+    }
+
+    pub fn clone_count(&self) -> usize {
+        self.clones.len()
     }
 
     fn next(&mut self, w: &World) {
@@ -498,15 +709,18 @@ impl Ninja {
         match &mut a {
             Act::Leap { from, style, .. } => {
                 *from = (self.x, self.y);
-                if let Some(Surf::Win(h)) = self.on {
-                    self.no_land = Some((Surf::Win(h), self.t + 0.3));
+                if let Some(s @ Surf::Win(..)) = self.on {
+                    self.no_land = Some((s, self.t + 0.3));
                 }
                 self.on = None;
                 if *style == LeapStyle::Flicker {
                     self.fx.push(Fx::new(Kind::Poof, (self.x, self.y - 25.0 * self.s), 0.45, self.s));
                 }
             }
-            Act::Walk { gait: Gait::Horse | Gait::Car, .. } => {
+            Act::Walk { gait: g @ (Gait::Horse | Gait::Car), .. } => {
+                if *g == Gait::Car {
+                    self.car_col = *self.rng.pick(props::CAR_COLORS);
+                }
                 self.fx.push(Fx::new(Kind::Poof, (self.x, self.y - 20.0 * self.s), 0.4, self.s * 1.3));
             }
             Act::Say { lines, dur, think } => {
@@ -518,10 +732,23 @@ impl Ninja {
                 self.say(lines, 5.0, false);
             }
             Act::Whop { .. } | Act::Jutsu { .. } => {
-                if self.shinobi && w.cfg.jutsu.eye && self.rng.chance(0.6) {
-                    let hp = (self.x, self.y - (rig::HEIGHT + 22.0) * self.s);
-                    self.fx.push(Fx::new(Kind::EyeFlash, hp, 1.0, self.s));
+                if let Some(p) = self.target_point() {
+                    if (p.0 - self.x).abs() > 6.0 {
+                        self.facing = sgn(p.0 - self.x);
+                    }
                 }
+            }
+            Act::Glare { .. } => {
+                let hp = (self.x, self.y - (rig::HEIGHT + 22.0) * self.s);
+                self.fx.push(Fx::new(Kind::EyeFlash, hp, 1.1, self.s));
+            }
+            Act::Climb { side, .. } => {
+                self.facing = -*side;
+                self.on = None;
+            }
+            Act::Rest => {
+                let line = self.rng.pick(&["Nobody's home... nap time.", "You left? Taskbar nap!", "Wake me when you're back."]).to_string();
+                self.say(vec![line], 3.0, true);
             }
             Act::Sleep { .. } => {
                 if self.rng.chance(0.5) {
@@ -547,9 +774,77 @@ impl Ninja {
             | Act::Poke { dur }
             | Act::Taunt { dur }
             | Act::Stumble { dur }
+            | Act::Glare { dur }
             | Act::Land { dur } => at >= dur,
             Act::Say { .. } => true,
             Act::Meditate => false,
+            Act::Rest => {
+                if self.fx_cd <= 0.0 {
+                    self.fx_cd = 1.4;
+                    let hp = (self.x + self.facing * -6.0 * self.s, self.y - 20.0 * self.s);
+                    self.fx.push(Fx::new(Kind::Zzz, hp, 2.4, self.s));
+                }
+                // wake up when the user is back (or RAM is on fire)
+                if w.user_idle < 1.0 || (w.mem.ok && w.mem.load >= w.cfg.sys_alarm) {
+                    self.plan.clear();
+                    self.plan.push_back(Act::Say { lines: vec![self.rng.pick(&["Huh?! I'm up! I'm up!", "Welcome back!", "I wasn't sleeping. I was meditating."]).to_string()], dur: 2.2, think: false });
+                    self.plan.push_back(Act::Stunt { k: StuntK::Scratch, dur: 1.2 });
+                    return true;
+                }
+                false
+            }
+            Act::Climb { h, side, down } => {
+                let Some((r, maxed)) = Tracker::live_rect(h) else {
+                    self.fall_off(Some(&["Where'd the wall go?!"]));
+                    return false;
+                };
+                if maxed && !down {
+                    self.fall_off(Some(&["Maximized?! RUDE."]));
+                    return false;
+                }
+                let wall = if side < 0.0 { r.l as f32 } else { r.r as f32 };
+                self.x = wall + side * 7.0 * self.s;
+                self.facing = -side;
+                let sp = (if self.shinobi || w.look.ninja_run { 210.0 } else { 140.0 }) * speed_mult * self.ui;
+                self.phase += dt * sp / (16.0 * self.s);
+                if down {
+                    self.y += sp * 1.2 * dt;
+                    let m = tr.mon_at(self.x, self.y);
+                    let fy = tr.floor_y(m);
+                    if self.y >= fy {
+                        self.set_on(Surf::Floor(m), (self.x, fy));
+                        self.act = Act::Land { dur: 0.2 };
+                        self.act_t = 0.0;
+                    } else if self.y >= r.b as f32 - 4.0 {
+                        // end of the wall: let go
+                        self.act = Act::Fall;
+                        self.act_t = 0.0;
+                        self.vx = side * 40.0 * self.ui;
+                        self.vy = 0.0;
+                    }
+                } else {
+                    // below the wall's bottom: a quick jump up onto it first
+                    let boost = if self.y > r.b as f32 - 6.0 { 3.2 } else { 1.0 };
+                    self.y -= sp * boost * dt;
+                    if self.y <= r.t as f32 + 2.0 {
+                        // vault over the edge onto the top
+                        let p = (wall - side * 16.0 * self.s, r.t as f32);
+                        if self.set_on(Surf::Win(h, 0), p) {
+                            self.no_land = None;
+                            self.act = Act::Land { dur: 0.22 };
+                            self.act_t = 0.0;
+                            self.quip(&["Parkour!", "Wall run!", "Ninja climb!"], 0.25);
+                        } else {
+                            self.fall_off(None);
+                        }
+                    }
+                }
+                if self.fx_cd <= 0.0 && self.rng.chance(0.15) {
+                    self.fx_cd = 0.3;
+                    self.fx.push(Fx::new(Kind::Dust, (wall, self.y - 4.0 * self.s), 0.35, self.s).vel(side * 30.0, 20.0));
+                }
+                false
+            }
             Act::Sleep { dur } => {
                 if self.fx_cd <= 0.0 {
                     self.fx_cd = 1.1;
@@ -562,7 +857,7 @@ impl Ninja {
                 let Some(surf) = self.on else { return true };
                 let goal_abs = match surf {
                     Surf::Floor(_) => tx,
-                    Surf::Win(_) => self.last_rect.map(|r| r.l as f32).unwrap_or(0.0) + tx,
+                    Surf::Win(..) => self.last_rect.map(|r| r.l as f32).unwrap_or(0.0) + tx,
                 };
                 let (lo, hi) = self.walk_range(tr);
                 let goal = if lo < hi { goal_abs.clamp(lo, hi) } else { self.x };
@@ -587,7 +882,7 @@ impl Ninja {
                 self.facing = if gait == Gait::Moonwalk { -sgn(d) } else { sgn(d) };
                 let step = (sp * dt).min(d.abs());
                 self.x += sgn(d) * step;
-                if let (Some(Surf::Win(_)), Some(r)) = (self.on, self.last_rect) {
+                if let (Some(Surf::Win(..)), Some(r)) = (self.on, self.last_rect) {
                     self.off = self.x - r.l as f32;
                 }
                 let stride = match gait {
@@ -674,7 +969,15 @@ impl Ninja {
                 let hit_at = if item == Item::Gloves { 0.25 } else { 0.55 };
                 let crossed = (p0 < hit_at && p1 >= hit_at) || (p1 < p0 && hit_at <= p1);
                 if crossed && at < dur - 0.2 {
-                    let impact = (self.x + self.facing * 30.0 * self.s, self.y - 8.0 * self.s);
+                    let mut impact = (self.x + self.facing * 30.0 * self.s, self.y - 8.0 * self.s);
+                    // whopping a taskbar / tray button: hit the button itself
+                    if let Some(Target::Rect(r)) = self.target {
+                        let c = ((r.l + r.r) as f32 / 2.0, (r.t + r.b) as f32 / 2.0);
+                        if dist(c, impact) < 140.0 * self.ui {
+                            impact = (c.0, r.t as f32 + 6.0 * self.ui);
+                            self.fx.push(Fx::new(Kind::Flash { w: r.w() as f32, h: r.h() as f32 }, c, 0.45, self.s));
+                        }
+                    }
                     let word = self.rng.pick(item.hit_word()).to_string();
                     let rot = self.rng.range(-0.3, 0.3);
                     self.fx.push(Fx::new(Kind::Burst { word, col: Col::rgb(255, 225, 60) }, (impact.0, impact.1 - 22.0 * self.s), 0.8, self.s).rot(rot));
@@ -697,7 +1000,7 @@ impl Ninja {
                     let (lo, hi) = self.walk_range(tr);
                     let nx = (self.x + self.facing * 110.0 * self.s * dt / dur).clamp(lo, hi.max(lo));
                     self.x = nx;
-                    if let (Some(Surf::Win(_)), Some(r)) = (self.on, self.last_rect) {
+                    if let (Some(Surf::Win(..)), Some(r)) = (self.on, self.last_rect) {
                         self.off = self.x - r.l as f32;
                     }
                 }
@@ -723,7 +1026,7 @@ impl Ninja {
                 if at > 1.35 && at < 1.7 {
                     let (lo, hi) = self.walk_range(w.tr);
                     self.x = (self.x + self.facing * 160.0 * self.ui * dt).clamp(lo, hi.max(lo));
-                    if let (Some(Surf::Win(_)), Some(r)) = (self.on, self.last_rect) {
+                    if let (Some(Surf::Win(..)), Some(r)) = (self.on, self.last_rect) {
                         self.off = self.x - r.l as f32;
                     }
                 }
@@ -736,8 +1039,13 @@ impl Ninja {
             JutsuK::Shuriken => {
                 if crossed(1.75) {
                     let from = (self.x + self.facing * 4.0 * s, self.y - 85.0 * s);
-                    let to = (self.x + self.facing * 150.0 * s, self.y - 10.0 * s);
-                    let mut f = Fx::new(Kind::Shuriken { to, from, col: aura }, from, 0.55, s);
+                    // aimed at the hog (window / taskbar button) when it's elsewhere
+                    let to = self
+                        .far_target()
+                        .filter(|p| dist(*p, from) < 1150.0 * self.ui)
+                        .unwrap_or((self.x + self.facing * 150.0 * s, self.y - 10.0 * s));
+                    let fly = (dist(from, to) / (1300.0 * self.ui)).clamp(0.5, 1.0);
+                    let mut f = Fx::new(Kind::Shuriken { to, from, col: aura }, from, fly, s);
                     f.x = from.0;
                     f.y = from.1;
                     self.fx.push(f);
@@ -754,14 +1062,8 @@ impl Ninja {
             }
             JutsuK::Clones => {
                 if crossed(0.7) {
-                    let n = 2 + (self.chaos > 0.75) as usize;
-                    for i in 0..n {
-                        let side = if i % 2 == 0 { -1.0 } else { 1.0 };
-                        let dx = side * (40.0 + 28.0 * (i / 2) as f32 + self.rng.range(0.0, 15.0)) * s;
-                        self.clones.push(CloneN { dx, t: 0.0, dur: 9.0 + self.rng.range(0.0, 3.0) });
-                        self.fx.push(Fx::new(Kind::Poof, (self.x + dx, self.y - 25.0 * s), 0.5, s));
-                    }
-                    self.quip(&["Shadow clones!", "Multi-bonk!", "There's more of me!"], 0.9);
+                    self.spawn_clones(w);
+                    self.quip(&["Shadow clones!", "Multi-bonk!", "There's more of me!", "Everybody do your own thing!"], 0.9);
                 }
             }
             JutsuK::Fire => {
@@ -842,12 +1144,12 @@ impl Ninja {
     fn spot_here(&self) -> Option<Spot> {
         match self.on? {
             Surf::Floor(m) => Some(Spot { surf: Surf::Floor(m), x: self.x }),
-            Surf::Win(h) => Some(Spot { surf: Surf::Win(h), x: self.off }),
+            s @ Surf::Win(..) => Some(Spot { surf: s, x: self.off }),
         }
     }
 
     fn random_window_spot(&mut self, tr: &Tracker, exclude: Option<Surf>) -> Option<Spot> {
-        let segs: Vec<_> = tr.segs.iter().filter(|s| matches!(s.surf, Surf::Win(_)) && Some(s.surf) != exclude).copied().collect();
+        let segs: Vec<_> = tr.segs.iter().filter(|s| matches!(s.surf, Surf::Win(..)) && Some(s.surf) != exclude).copied().collect();
         if segs.is_empty() {
             return None;
         }
@@ -861,7 +1163,7 @@ impl Ninja {
                 break;
             }
         }
-        let Surf::Win(h) = seg.surf else { return None };
+        let Some(h) = seg.surf.hwnd() else { return None };
         let rect_l = tr.win(h)?.rect.l as f32;
         let m = 25.0 * self.ui;
         let x = self.rng.range(seg.x0 + m, (seg.x1 - m).max(seg.x0 + m));
@@ -917,6 +1219,11 @@ impl Ninja {
             let gait = self.choose_gait(d, matches!(to.surf, Surf::Floor(_)), w);
             return vec![Act::Walk { tx: to.x, gait }];
         }
+        if w.cfg.climb && self.rng.chance(0.45) {
+            if let Some(v) = self.plan_climb(to, tp, w) {
+                return v;
+            }
+        }
         let mut v = vec![];
         let mut start = (self.x, self.y);
         if let Some(Surf::Floor(m)) = cur {
@@ -948,11 +1255,83 @@ impl Ninja {
         v
     }
 
+    /// Climb a window's side wall instead of leaping: up onto its top edge
+    /// from below, or down from its top edge to the floor.
+    fn plan_climb(&mut self, to: Spot, tp: P, w: &World) -> Option<Vec<Act>> {
+        let tr = w.tr;
+        let cur = self.on?;
+        let ui = self.ui;
+        let s = self.s;
+        let (lo, hi) = self.walk_range(tr);
+        // surface coordinates of the current surface (offset for windows)
+        let to_local = |x: f32, me: &Ninja| match cur {
+            Surf::Floor(_) => x,
+            Surf::Win(..) => x - me.last_rect.map(|r| r.l as f32).unwrap_or(0.0),
+        };
+        match to.surf {
+            // UP onto a window's top edge
+            Surf::Win(h, 0) => {
+                let (r, maxed) = Tracker::live_rect(h)?;
+                let rise = self.y - r.t as f32;
+                let gap = self.y - r.b as f32; // > 0: the wall ends above my feet
+                if maxed || rise < 90.0 * ui || rise > 900.0 * ui || gap > 220.0 * ui {
+                    return None;
+                }
+                let mut best: Option<(f32, f32)> = None; // (distance, side)
+                for side in [-1.0f32, 1.0] {
+                    let wall = if side < 0.0 { r.l as f32 } else { r.r as f32 };
+                    let base = wall + side * 7.0 * s;
+                    if base < lo || base > hi {
+                        continue;
+                    }
+                    // is the wall's lower part visible-ish (not under another window)?
+                    let d = (base - self.x).abs();
+                    if best.map(|b| d < b.0).unwrap_or(true) {
+                        best = Some((d, side));
+                    }
+                }
+                let (d, side) = best?;
+                let base = (if side < 0.0 { r.l as f32 } else { r.r as f32 }) + side * 7.0 * s;
+                let gait = self.choose_gait(d, matches!(cur, Surf::Floor(_)), w);
+                let mut v = vec![Act::Walk { tx: to_local(base, self), gait }, Act::Climb { h, side, down: false }];
+                if (tp.0 - base).abs() > 60.0 * ui {
+                    v.push(Act::Walk { tx: to.x, gait: Gait::Walk });
+                }
+                Some(v)
+            }
+            // DOWN from the top edge I'm on to the floor
+            Surf::Floor(_) => {
+                let Surf::Win(h, 0) = cur else { return None };
+                let r = self.last_rect?;
+                let seg = tr.seg_at(cur, self.x, 20.0)?;
+                let mut sides = vec![];
+                if seg.x0 <= r.l as f32 + 14.0 {
+                    sides.push(-1.0f32);
+                }
+                if seg.x1 >= r.r as f32 - 14.0 {
+                    sides.push(1.0);
+                }
+                if sides.is_empty() || tp.1 - self.y < 120.0 * ui {
+                    return None;
+                }
+                let side = *self.rng.pick(&sides);
+                let edge = if side < 0.0 { 12.0 * s } else { r.w() as f32 - 12.0 * s };
+                Some(vec![
+                    Act::Walk { tx: edge, gait: Gait::Walk },
+                    Act::Climb { h, side, down: true },
+                    Act::Walk { tx: to.x, gait: self.choose_gait(200.0 * ui, true, w) },
+                ])
+            }
+            _ => None,
+        }
+    }
+
     fn pick_weapon(&mut self, w: &World) -> Item {
         let p = &w.cfg.props;
         let mut v = vec![];
         for (on, it) in [
             (p.whip, Item::Whip),
+            (p.whip, Item::Whip), // the whip is the signature move: double weight
             (p.mallet, Item::Mallet),
             (p.wrench, Item::Wrench),
             (p.crowbar, Item::Crowbar),
@@ -1016,11 +1395,18 @@ impl Ninja {
         Act::Jutsu { k, dur, n: 0 }
     }
 
+    /// A randomised attack sequence. Eye stares, clones and jutsu are spread
+    /// out with random pauses instead of firing back-to-back.
     fn attack(&mut self, w: &World) -> Vec<Act> {
         let mut v = vec![];
         let js = self.enabled_jutsu(w);
-        if w.cfg.shinobi && w.cfg.jutsu.clones && self.clones.is_empty() && self.rng.chance(0.25) {
+        if w.cfg.shinobi && w.cfg.jutsu.eye && self.rng.chance(0.22) {
+            v.push(Act::Glare { dur: 1.1 });
+            v.push(Act::Idle { dur: self.rng.range(0.8, 2.6), v: 0 });
+        }
+        if w.cfg.shinobi && w.cfg.jutsu.clones && self.clones.is_empty() && self.rng.chance(0.18) {
             v.push(Self::jutsu_act(JutsuK::Clones));
+            v.push(Act::Idle { dur: self.rng.range(0.4, 1.5), v: 0 });
         }
         let fav_jutsu = match w.look.favorite.as_str() {
             "orb" => Some(JutsuK::Orb),
@@ -1028,17 +1414,46 @@ impl Ninja {
             "kunai" => Some(JutsuK::Kunai),
             _ => None,
         };
-        if !js.is_empty() && self.rng.chance(0.55) {
-            let k = match fav_jutsu {
-                Some(f) if js.contains(&f) && self.rng.chance(0.4) => f,
-                _ => *self.rng.pick(&js),
-            };
-            v.push(Self::jutsu_act(k));
-        } else {
-            let item = self.pick_weapon(w);
-            v.push(Act::Whop { item, dur: 2.6 });
+        let hits = 1 + self.rng.chance(0.35 * self.chaos) as usize;
+        for i in 0..hits {
+            if !js.is_empty() && self.rng.chance(0.5) {
+                let k = match fav_jutsu {
+                    Some(f) if js.contains(&f) && self.rng.chance(0.35) => f,
+                    _ => *self.rng.pick(&js),
+                };
+                v.push(Self::jutsu_act(k));
+            } else {
+                let item = self.pick_weapon(w);
+                v.push(Act::Whop { item, dur: self.rng.range(2.0, 3.4) });
+            }
+            if i + 1 < hits {
+                v.push(Act::Taunt { dur: self.rng.range(0.5, 1.4) });
+            }
         }
         v
+    }
+
+    /// Where the current target is, right now.
+    fn target_point(&self) -> Option<P> {
+        match self.target? {
+            Target::Rect(r) => Some(((r.l + r.r) as f32 / 2.0, (r.t + r.b) as f32 / 2.0)),
+            Target::Win(h) => {
+                let (r, _) = Tracker::live_rect(h)?;
+                let x = self.x.clamp(r.l as f32 + 40.0, (r.r as f32 - 40.0).max(r.l as f32 + 40.0));
+                Some((x, r.t as f32 + 14.0 * self.ui))
+            }
+        }
+    }
+
+    /// Target point if it's somewhere else (not right under my feet).
+    fn far_target(&self) -> Option<P> {
+        let p = self.target_point()?;
+        if let (Some(Target::Win(h)), Some(on)) = (self.target, self.on) {
+            if on.hwnd() == Some(h) {
+                return None;
+            }
+        }
+        (dist(p, (self.x, self.y - 30.0 * self.s)) > 120.0 * self.ui).then_some(p)
     }
 
     fn find_hog(&self, w: &World) -> Option<ProcStat> {
@@ -1071,36 +1486,67 @@ impl Ninja {
         let tr = w.tr;
         let pretty = pretty_name(&hog.name);
         let mut spot = None;
+        let mut target = None;
         let mut taunt = format!("{}: {}?!", pretty, fmt_bytes(hog.bytes));
         let wins: Vec<_> = tr.windows_of(&hog.name).into_iter().cloned().collect();
+        let width = |a: &&Seg, b: &&Seg| (a.x1 - a.x0).total_cmp(&(b.x1 - b.x0));
+        // 1. a visible part of one of its open windows (top edge, else an inner ledge)
         for wi in &wins {
-            let best = tr.segs_of(Surf::Win(wi.hwnd)).max_by(|a, b| (a.x1 - a.x0).total_cmp(&(b.x1 - b.x0))).copied();
+            let segs: Vec<Seg> = tr.segs.iter().filter(|s| s.surf.hwnd() == Some(wi.hwnd)).copied().collect();
+            let best = segs.iter().filter(|s| !s.surf.is_ledge()).max_by(width).or_else(|| segs.iter().max_by(width)).copied();
             if let Some(seg) = best {
                 let m = 30.0 * self.ui;
                 let x = self.rng.range(seg.x0 + m, (seg.x1 - m).max(seg.x0 + m));
                 spot = Some(Spot { surf: seg.surf, x: x - wi.rect.l as f32 });
+                target = Some(Target::Win(wi.hwnd));
                 break;
             }
         }
+        // 2. minimized / covered: its taskbar or tray button
+        if spot.is_none() {
+            if let Some(b) = taskbar::find(w.tb, &hog.name, &tr.titles_of(&hog.name)) {
+                let cx = (b.l + b.r) as f32 / 2.0;
+                let m = tr.mon_at(cx, b.t as f32 - 4.0);
+                let (l, r) = tr.floor_range(m);
+                let side = if self.x < cx { -1.0 } else { 1.0 };
+                let x = (cx + side * 30.0 * self.s).clamp(l + 14.0, r - 14.0);
+                spot = Some(Spot { surf: Surf::Floor(m), x });
+                target = Some(Target::Rect(b));
+                taunt = format!("Hiding in the taskbar, {}? ({})", pretty, fmt_bytes(hog.bytes));
+            }
+        }
+        // 3. a covered window: stand on the floor under it
         if spot.is_none() {
             if let Some(wi) = wins.first() {
                 let cx = (wi.rect.l + wi.rect.r) as f32 / 2.0;
                 let m = tr.mon_at(cx, (wi.rect.t + wi.rect.b) as f32 / 2.0);
                 let (l, r) = tr.floor_range(m);
                 spot = Some(Spot { surf: Surf::Floor(m), x: (cx + self.rng.range(-200.0, 200.0)).clamp(l + 60.0, r - 60.0) });
+                target = Some(Target::Win(wi.hwnd));
                 taunt = format!("Found you, {}! ({})", pretty, fmt_bytes(hog.bytes));
             } else {
                 spot = Some(self.random_floor_spot(tr));
-                taunt = if tr.has_window(&hog.name) {
-                    format!("{} hides in the taskbar... {}", pretty, fmt_bytes(hog.bytes))
-                } else {
-                    format!("Invisible hog {}: {}", pretty, fmt_bytes(hog.bytes))
-                };
+                taunt = format!("Invisible hog {}: {}", pretty, fmt_bytes(hog.bytes));
             }
         }
-        let mut v = self.plan_travel(spot.unwrap(), w);
-        v.push(Act::Say { lines: vec![taunt, self.rng.pick(&["Bonk time.", "Prepare yourself.", "Nothing personal.", "Diet starts NOW."]).to_string()], dur: 3.2, think: false });
-        v.push(Act::Taunt { dur: 0.7 });
+        self.target = target;
+        let mut v = vec![];
+        let line2 = self.rng.pick(&["Bonk time.", "Prepare yourself.", "Nothing personal.", "Diet starts NOW.", "Whip it. Whip it good."]).to_string();
+        // sometimes open with a long-range wind-spiral shuriken from right here
+        let ranged = self.shinobi
+            && w.cfg.jutsu.shuriken
+            && self.far_target().map(|p| dist(p, (self.x, self.y)) < 1050.0 * self.ui && dist(p, (self.x, self.y)) > 220.0 * self.ui).unwrap_or(false)
+            && self.rng.chance(0.4);
+        if ranged {
+            v.push(Act::Say { lines: vec![taunt.clone(), "Rasen-shuriken incoming!".into()], dur: 3.0, think: false });
+            v.push(Self::jutsu_act(JutsuK::Shuriken));
+            v.push(Act::Idle { dur: self.rng.range(0.5, 1.6), v: 1 });
+        }
+        v.extend(self.plan_travel(spot.unwrap(), w));
+        if !ranged {
+            v.push(Act::Say { lines: vec![taunt, line2], dur: 3.2, think: false });
+        }
+        v.push(Act::Taunt { dur: self.rng.range(0.4, 1.0) });
         v.extend(self.attack(w));
         if self.rng.chance(0.5) {
             v.push(Act::Taunt { dur: 1.0 });
@@ -1121,6 +1567,33 @@ impl Ninja {
         let cfg = w.cfg;
         if self.on.is_none() {
             return vec![Act::Fall];
+        }
+        self.target = None;
+        // clones are out: stay with them and show off on the spot
+        if !self.clones.is_empty() {
+            return match self.rng.idx(5) {
+                0 => vec![Act::Dance { dur: self.rng.range(2.0, 3.5) }],
+                1 => vec![Act::Say { lines: vec![self.rng.pick(&["Get 'em, boys!", "Clone party!", "Which one is the real me?"]).to_string()], dur: 2.0, think: false }, Act::Taunt { dur: 1.5 }],
+                2 if w.cfg.stunts => vec![Act::Stunt { k: StuntK::Backflip, dur: 0.85 }, Act::Idle { dur: 1.0, v: 0 }],
+                3 => {
+                    let item = self.pick_weapon(w);
+                    vec![Act::Whop { item, dur: self.rng.range(1.5, 2.5) }]
+                }
+                _ => vec![Act::Idle { dur: self.rng.range(1.0, 2.5), v: self.rng.idx(3) as u8 }],
+            };
+        }
+        // 0. you've been away for a while: go rest on the taskbar
+        if cfg.rest_after_min > 0 && w.user_idle > cfg.rest_after_min as f32 * 60.0 && !(w.mem.ok && w.mem.load >= cfg.sys_alarm) {
+            let mut v = vec![];
+            if !matches!(self.on, Some(Surf::Floor(_))) {
+                let s = self.random_floor_spot(tr);
+                let s = Spot { x: self.x + self.rng.range(-200.0, 200.0) * self.ui, ..s };
+                v.extend(self.plan_travel(s, w));
+            }
+            v.push(Act::Stunt { k: StuntK::Scratch, dur: 1.0 });
+            v.push(Act::Sit { dur: self.rng.range(1.5, 3.0) });
+            v.push(Act::Rest);
+            return v;
         }
         // 1. periodic memory callout
         if cfg.clouds && self.t - self.last_callout > cfg.callout_s as f32 {
@@ -1143,7 +1616,7 @@ impl Ninja {
                 let wins: Vec<_> = tr.windows_of(&app).into_iter().cloned().collect();
                 let mut spot = None;
                 for wi in &wins {
-                    if let Some(seg) = tr.segs_of(Surf::Win(wi.hwnd)).next().copied() {
+                    if let Some(seg) = tr.segs_of(Surf::Win(wi.hwnd, 0)).next().copied() {
                         let x = (seg.x0 + seg.x1) / 2.0;
                         spot = Some(Spot { surf: seg.surf, x: x - wi.rect.l as f32 });
                         break;
@@ -1161,7 +1634,7 @@ impl Ninja {
         // 4. nap when things are calm
         if cfg.nap && w.mem.ok && w.mem.load < cfg.nap_below && self.rng.chance(0.15) {
             let mut v = vec![];
-            if matches!(self.on, Some(Surf::Win(_))) && self.rng.chance(0.5) {
+            if matches!(self.on, Some(Surf::Win(..))) && self.rng.chance(0.5) {
                 v.push(Act::Sit { dur: self.rng.range(2.0, 5.0) });
             }
             v.push(Act::Sleep { dur: self.rng.range(8.0, 20.0) });
@@ -1170,22 +1643,37 @@ impl Ninja {
         }
         // 5. free roam
         let ch = self.chaos;
-        let on_win = matches!(self.on, Some(Surf::Win(_)));
+        let on_win = matches!(self.on, Some(Surf::Win(..)));
         let on_floor = matches!(self.on, Some(Surf::Floor(_)));
         let mounts = cfg.props.horse || cfg.props.car;
-        let opts: [(f32, u8); 11] = [
+        let t = self.t;
+        let stunt_ok = cfg.stunts && t >= self.next_stunt;
+        let jutsu_ok = cfg.shinobi && t >= self.next_jutsu;
+        let ride_ok = on_floor && mounts && t >= self.next_ride;
+        let mut opts: Vec<(f32, u8)> = vec![
             (3.0, 0),                                                    // wander
-            (if cfg.perch { 2.6 } else { 0.0 }, 1),                      // perch on another window
+            (if cfg.perch { 2.6 } else { 0.0 }, 1),                      // perch on another window / ledge
             (if on_win { 0.9 } else { 0.0 }, 2),                         // back to floor
             (if on_win { 1.6 } else { 0.4 }, 3),                         // sit
-            (if cfg.stunts { 0.4 + 1.6 * ch } else { 0.0 }, 4),          // stunt
-            (if cfg.stunts { 0.2 + 0.9 * ch } else { 0.0 }, 5),          // dance
+            (if stunt_ok { 0.4 + 1.4 * ch } else { 0.0 }, 4),            // stunt
+            (if stunt_ok { 0.2 + 0.8 * ch } else { 0.0 }, 5),            // dance
             (1.2, 6),                                                    // idle
-            (if on_floor && mounts { 0.9 } else { 0.0 }, 7),             // joyride
-            (if cfg.shinobi { 0.5 + 0.8 * ch } else { 0.0 }, 8),          // jutsu show-off
+            (if ride_ok { 0.8 } else { 0.0 }, 7),                        // joyride
+            (if jutsu_ok { 0.5 + 0.7 * ch } else { 0.0 }, 8),            // jutsu show-off
             (0.5, 9),                                                    // taunt / quip
             (if cfg.clouds { 0.25 } else { 0.0 }, 10),                   // random memory thought
+            // rare stuff: seen "every now and then"
+            (if cfg.shinobi && cfg.jutsu.eye { 0.12 } else { 0.0 }, 11), // red-eye stare
+            (if cfg.props.jetpack { 0.1 } else { 0.0 }, 12),             // jetpack tour
+            (if on_floor { 0.15 + 0.2 * ch } else { 0.0 }, 13),          // full-width sprint
+            (if cfg.climb && cfg.perch { 0.35 } else { 0.0 }, 14),       // climb a window
+            (0.12, 15),                                                  // knock on a random window
         ];
+        // don't repeat what he just did
+        for o in opts.iter_mut() {
+            let n = self.recent.iter().filter(|r| **r == o.1).count();
+            o.0 *= 0.3f32.powi(n as i32);
+        }
         let total: f32 = opts.iter().map(|o| o.0).sum();
         let mut r = self.rng.f() * total;
         let mut choice = 0;
@@ -1195,6 +1683,67 @@ impl Ninja {
                 choice = id;
                 break;
             }
+        }
+        self.recent.push_back(choice);
+        while self.recent.len() > 5 {
+            self.recent.pop_front();
+        }
+        let calm = 1.5 - ch; // more chaos = shorter cooldowns
+        match choice {
+            4 | 5 => self.next_stunt = t + self.rng.range(6.0, 30.0) * calm,
+            7 => self.next_ride = t + self.rng.range(40.0, 160.0) * calm,
+            8 => self.next_jutsu = t + self.rng.range(30.0, 120.0) * calm,
+            _ => {}
+        }
+        match choice {
+            11 => {
+                let line = self.rng.pick(&["I see your RAM.", "...", "Who's using all the memory?", "*stares in tomoe*"]).to_string();
+                return vec![Act::Glare { dur: 1.2 }, Act::Say { lines: vec![line], dur: 2.0, think: false }, Act::Taunt { dur: 0.8 }];
+            }
+            12 => {
+                if let Some(s) = self.random_window_spot(tr, self.on) {
+                    return vec![Act::Say { lines: vec!["JETPACK TIME!".into()], dur: 1.5, think: false }, Act::Leap { to: s, dur: 2.2, style: LeapStyle::Jet, from: (f32::NAN, f32::NAN) }];
+                }
+                return self.wander(w);
+            }
+            13 => {
+                let (l, r) = match self.on {
+                    Some(Surf::Floor(m)) => tr.floor_range(m),
+                    _ => return self.wander(w),
+                };
+                let target = if self.x - l > r - self.x { l + 30.0 } else { r - 30.0 };
+                let gait = if self.shinobi || w.look.ninja_run { Gait::Ninja } else { Gait::Run };
+                return vec![Act::Say { lines: vec![self.rng.pick(&["SPRINT!", "Gotta go fast!", "Taskbar marathon!"]).to_string()], dur: 1.4, think: false }, Act::Walk { tx: target, gait }, Act::Taunt { dur: 0.8 }];
+            }
+            14 => {
+                // pick a window top and insist on climbing it
+                for _ in 0..4 {
+                    if let Some(s) = self.random_window_spot(tr, self.on) {
+                        if s.surf.is_ledge() {
+                            continue;
+                        }
+                        if let Some(tp) = self.resolve(s, tr) {
+                            if let Some(mut v) = self.plan_climb(s, tp, w) {
+                                if self.rng.chance(0.5) {
+                                    v.push(Act::Sit { dur: self.rng.range(3.0, 7.0) });
+                                }
+                                return v;
+                            }
+                        }
+                    }
+                }
+                return self.wander(w);
+            }
+            15 => {
+                if let Some(s) = self.random_window_spot(tr, self.on) {
+                    let mut v = self.plan_travel(s, w);
+                    v.push(Act::Say { lines: vec![self.rng.pick(&["Knock knock.", "Anybody home?", "Nice pane you've got here.", "Is this a toolbar? I'm standing on it."]).to_string()], dur: 2.2, think: false });
+                    v.push(Act::Poke { dur: 1.6 });
+                    return v;
+                }
+                return self.wander(w);
+            }
+            _ => {}
         }
         match choice {
             1 => {
@@ -1293,7 +1842,7 @@ impl Ninja {
         }
         let tx_abs = self.rng.range(lo, hi);
         let tx = match self.on {
-            Some(Surf::Win(_)) => tx_abs - self.last_rect.map(|r| r.l as f32).unwrap_or(0.0),
+            Some(Surf::Win(..)) => tx_abs - self.last_rect.map(|r| r.l as f32).unwrap_or(0.0),
             _ => tx_abs,
         };
         let gait = self.choose_gait((tx_abs - self.x).abs(), matches!(self.on, Some(Surf::Floor(_))), w);
@@ -1330,6 +1879,20 @@ impl Ninja {
             self.plan.extend(v);
             self.next(w);
         }
+    }
+
+    /// Whop a specific app (by exe name), wherever it's shown.
+    pub fn whop_app(&mut self, exe: &str, w: &World) {
+        if !self.interrupt_ok() {
+            return;
+        }
+        let exe = exe.trim().to_lowercase();
+        let exe = if exe.ends_with(".exe") { exe } else { format!("{exe}.exe") };
+        let hog = w.mem.procs.iter().find(|p| p.name == exe).cloned().unwrap_or(ProcStat { name: exe.clone(), ..Default::default() });
+        self.plan.clear();
+        let v = self.plan_bonk(&hog, w);
+        self.plan.extend(v);
+        self.next(w);
     }
 
     pub fn jutsu_now(&mut self, k: JutsuK, w: &World) {
@@ -1611,6 +2174,14 @@ impl Ninja {
             Act::Stumble { .. } => (poses::stumble(at), Item::None, None),
             Act::Land { dur } => (poses::land(at / dur), Item::None, None),
             Act::Dragged => (poses::dragged(t), Item::None, None),
+            Act::Climb { .. } => (poses::climb(self.phase), Item::None, None),
+            Act::Rest => (poses::sleep(t), Item::None, None),
+            Act::Glare { .. } => {
+                let mut p = poses::stance(t);
+                p.head = -6.0;
+                p.expr = rig::Expr::Focus;
+                (p, Item::None, None)
+            }
         };
         (pose, item, gait, swing)
     }
@@ -1637,12 +2208,16 @@ impl Ninja {
         let clones = self
             .clones
             .iter()
-            .map(|c| rig::solve(&pose, s, self.facing, (root.0 + c.dx, root.1)))
+            .filter_map(|c| {
+                let at = c.at?;
+                let (p, item, swing, orb) = self.clone_pose(c);
+                Some(CloneDraw { skel: rig::solve(&p, s, c.facing, at), item, swing, orb })
+            })
             .collect::<Vec<_>>();
         let fast = (self.vel.0 * self.vel.0 + self.vel.1 * self.vel.1).sqrt() > 260.0 * self.ui;
         let tomoe = self.shinobi
             && w.cfg.jutsu.eye
-            && (matches!(self.act, Act::Whop { .. } | Act::Jutsu { .. }) || matches!(gait, Some(Gait::Ninja)));
+            && (matches!(self.act, Act::Whop { .. } | Act::Jutsu { .. } | Act::Glare { .. }) || matches!(gait, Some(Gait::Ninja)));
         // trails
         if w.cfg.speed_fx && fast && !hidden && gait != Some(Gait::Car) {
             self.trail.push_front((skel, 0.0));
@@ -1687,8 +2262,10 @@ impl Ninja {
             r.3 = r.3.max(q.3);
         };
         for c in &lay.clones {
-            let b = c.bbox();
-            grow((b.0 - pad, b.1 - pad, b.2 + pad, b.3 + pad));
+            let b = c.skel.bbox();
+            if (b.0 - self.x).abs() < 1200.0 && (b.1 - self.y).abs() < 900.0 {
+                grow((b.0 - pad, b.1 - pad, b.2 + pad, b.3 + pad));
+            }
         }
         for f in &self.fx {
             let fb = f.bounds();
@@ -1733,10 +2310,16 @@ impl Ninja {
             props::horse(g, lay.ground, self.facing, s, t, moving);
         }
         // clones
+        let clone_fx = FigFx { vel: (0.0, 0.0), ..figfx };
         for c in &lay.clones {
-            g.alpha = 0.92;
-            rig::draw_figure(g, c, look, &figfx);
-            props::draw_item(g, lay.item, c, t, lay.swing);
+            g.alpha = 0.9;
+            rig::draw_figure(g, &c.skel, look, &clone_fx);
+            props::draw_item(g, c.item, &c.skel, t, c.swing);
+            if c.orb {
+                let r = 9.0 * s;
+                let h = c.skel.hand_f;
+                props::chakra_orb(g, (h.0 + c.skel.fwd.0 * r * 0.6, h.1 + r * 0.2), r, t, look.aura);
+            }
             g.alpha = 1.0;
         }
         if !lay.hidden {
@@ -1750,7 +2333,7 @@ impl Ninja {
             }
             if lay.gait == Some(Gait::Car) {
                 let sp = if moving { 500.0 } else { 0.0 };
-                props::car(g, lay.ground, self.facing, s, t, sp);
+                props::car(g, lay.ground, self.facing, s, t, sp, self.car_col);
             }
             // jutsu in hand
             if let Act::Jutsu { k, .. } = self.act {

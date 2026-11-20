@@ -146,7 +146,10 @@ pub fn open() {
         let m = mons.iter().find(|m| m.rect.contains(cx as f32, cy as f32)).unwrap_or(&mons[0]);
         let sc = m.dpi as f32 / 96.0;
         let mut r = RECT { left: 0, top: 0, right: (W as f32 * sc) as i32, bottom: (H as f32 * sc) as i32 };
-        let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+        // Owned by the hidden host window and without WS_EX_APPWINDOW, so it
+        // never gets a taskbar button: RamRonin lives in the tray only.
+        let owner = crate::with_app(|a| a.host).unwrap_or(std::ptr::null_mut());
+        let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
         AdjustWindowRectEx(&mut r, style, 0, 0);
         let (ww, hh) = (r.right - r.left, r.bottom - r.top);
         let x = (m.work.l + m.work.r) / 2 - ww / 2;
@@ -160,7 +163,7 @@ pub fn open() {
             y,
             ww,
             hh,
-            std::ptr::null_mut(),
+            owner,
             std::ptr::null_mut(),
             GetModuleHandleW(std::ptr::null()),
             std::ptr::null(),
@@ -509,8 +512,9 @@ The ninja keeps roaming as usual and now and then pops by to poke the app.",
     // ---------------- page 4: Behavior ----------------
     b.page = 4;
     b.heading(24, y0, 380, "Behaviour");
-    let beh: [(&str, GetB, SetB); 5] = [
+    let beh: [(&str, GetB, SetB); 6] = [
         ("Perch, sit and run on app windows", |c| c.perch, |c, v| c.perch = v),
+        ("Climb window walls && stand on ledges inside apps", |c| c.climb, |c, v| c.climb = v),
         ("Nap when RAM is calm", |c| c.nap, |c, v| c.nap = v),
         ("React when windows move or resize", |c| c.react_moves, |c, v| c.react_moves = v),
         ("Pause (he meditates in place)", |c| c.paused, |c, v| c.paused = v),
@@ -519,9 +523,16 @@ The ninja keeps roaming as usual and now and then pops by to poke the app.",
     for (i, (t, g, s)) in beh.iter().enumerate() {
         b.check(24, y0 + 28 + i as i32 * 28, 380, t, *g, *s);
     }
-    b.slider(24, y0 + 180, 380, "Animation frame rate", 15, 60, 5, |c| c.fps as i32, |c, v| c.fps = v as u32, |v| format!("{} fps", v));
-    b.button(24, y0 + 250, 190, 32, "Bring him to the mouse", ID_HOME);
-    b.button(224, y0 + 250, 180, 32, "Reset all settings", ID_RESET);
+    b.slider(24, y0 + 206, 380, "Animation frame rate", 15, 60, 5, |c| c.fps as i32, |c, v| c.fps = v as u32, |v| format!("{} fps", v));
+    b.slider(24, y0 + 266, 380, "Rest on the taskbar after you're away for", 0, 30, 1, |c| c.rest_after_min as i32, |c, v| c.rest_after_min = v as u32, |v| {
+        if v == 0 {
+            "never".into()
+        } else {
+            format!("{} min", v)
+        }
+    });
+    b.button(24, y0 + 330, 190, 32, "Bring him to the mouse", ID_HOME);
+    b.button(224, y0 + 330, 180, 32, "Reset all settings", ID_RESET);
     b.heading(434, y0, 380, "Controls");
     b.note(
         434,

@@ -703,6 +703,25 @@ pub mod poses {
     }
 
     /// Arm raised: holding a giant spinning shuriken overhead.
+    /// Climbing a wall that is in front of him (alternating reach / push).
+    pub fn climb(p: f32) -> Pose {
+        let s = p.sin();
+        Pose {
+            torso: 10.0,
+            head: -14.0,
+            ua_f: 150.0 + 26.0 * s,
+            fa_f: 172.0 + 12.0 * s,
+            ua_b: 150.0 - 26.0 * s,
+            fa_b: 172.0 - 12.0 * s,
+            th_f: 62.0 + 26.0 * s,
+            sh_f: -8.0 + 18.0 * s,
+            th_b: 62.0 - 26.0 * s,
+            sh_b: -8.0 - 18.0 * s,
+            expr: Expr::Focus,
+            ..Default::default()
+        }
+    }
+
     pub fn hold_up(t: f32) -> Pose {
         Pose {
             torso: -6.0,

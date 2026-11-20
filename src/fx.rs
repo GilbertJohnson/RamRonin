@@ -24,6 +24,8 @@ pub enum Kind {
     Log { vy: f32, ang: f32 },
     EyeFlash,
     Heart,
+    /// red flash over a whopped taskbar / tray button (w, h in px)
+    Flash { w: f32, h: f32 },
 }
 
 #[derive(Clone, Debug)]
@@ -120,6 +122,9 @@ impl Fx {
     }
 
     pub fn bounds(&self) -> (f32, f32, f32, f32) {
+        if let Kind::Flash { w, h } = self.kind {
+            return (self.x - w / 2.0 - 6.0, self.y - h / 2.0 - 6.0, self.x + w / 2.0 + 6.0, self.y + h / 2.0 + 6.0);
+        }
         let r = match &self.kind {
             Kind::Burst { .. } => 55.0,
             Kind::Boom { .. } => 80.0,
@@ -194,6 +199,13 @@ impl Fx {
                 let a = if u < 0.2 { u / 0.2 } else if u > 0.7 { (1.0 - u) / 0.3 } else { 1.0 };
                 let r = 15.0 * s * (0.8 + 0.25 * ease_out((u * 3.0).min(1.0)));
                 props::tomoe_eye(g, p, r, t, a);
+            }
+            Kind::Flash { w, h } => {
+                let a = fade;
+                let (x0, y0) = (p.0 - w / 2.0, p.1 - h / 2.0);
+                g.rect(x0, y0, *w, *h, Col::rgb(255, 40, 40).alpha(0.28 * a));
+                let pts = [(x0, y0), (x0 + w, y0), (x0 + w, y0 + h), (x0, y0 + h), (x0, y0)];
+                g.polyline(&pts, 2.5 * s, Col::rgb(255, 50, 50).alpha(a));
             }
             Kind::Heart => {
                 let r = 4.0 * s;

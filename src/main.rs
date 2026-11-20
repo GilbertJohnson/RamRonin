@@ -23,6 +23,7 @@ mod props;
 mod rig;
 mod skins;
 mod system;
+mod taskbar;
 mod tracker;
 mod util;
 mod win;
@@ -53,6 +54,16 @@ pub const WM_APP_SHOW: u32 = WM_APP + 2;
 pub const WM_APP_QUIT: u32 = WM_APP + 3;
 pub const WM_APP_CMD: u32 = WM_APP + 4;
 const OVERLAY_CLASS: &str = "RamRoninOverlay";
+const COPYDATA_WHOP: usize = 0x5248_0001;
+
+/// Win32 COPYDATASTRUCT (WM_COPYDATA payload).
+#[repr(C)]
+#[allow(non_snake_case)]
+struct COPYDATASTRUCT {
+    dwData: usize,
+    cbData: u32,
+    lpData: *mut c_void,
+}
 const TIMER_FRAME: usize = 1;
 
 thread_local! {
@@ -76,6 +87,11 @@ pub struct App {
     pub tracker: Tracker,
     pub mem: memory::Shared,
     pub keep: keepalive::Shared,
+    pub tb: taskbar::Shared,
+    pub tb_cache: Vec<taskbar::TbButton>,
+    /// last time the *user* (not our Keep-Active F15 tap) touched input
+    user_active_at: Instant,
+    last_beat: Option<std::time::SystemTime>,
     pub stop: Arc<AtomicBool>,
     pub skins: Vec<Skin>,
     pub look: Look,
@@ -93,6 +109,7 @@ pub struct App {
     shown: bool,
     debug: bool,
     last_debug: Instant,
+    tb_logged: usize,
 }
 
 impl App {
@@ -104,31 +121,59 @@ impl App {
         let now = Instant::now();
         let dt = (now - self.last).as_secs_f32();
         self.last = now;
+        self.tracker.ledges_on = cfg.climb;
         self.tracker.tick();
         if self.mem_cache_at.elapsed() > Duration::from_millis(500) {
             if let Ok(m) = self.mem.lock() {
                 self.mem_cache = m.clone();
             }
+            if let Ok(t) = self.tb.lock() {
+                self.tb_cache = t.clone();
+            }
+            if let Ok(k) = self.keep.lock() {
+                self.last_beat = k.last_beat;
+            }
             self.mem_cache_at = now;
         }
-        let w = World { tr: &self.tracker, mem: &self.mem_cache, cfg, look: &self.look };
+        // user idle time, ignoring our own Keep-Active heartbeat taps
+        let beat_recent = self.last_beat.and_then(|b| b.elapsed().ok()).map(|e| e.as_secs_f32() < 3.0).unwrap_or(false);
+        if win::idle_ms() < 1500 && !beat_recent {
+            self.user_active_at = now;
+        }
+        let user_idle = (now - self.user_active_at).as_secs_f32();
+        let w = World { tr: &self.tracker, mem: &self.mem_cache, cfg, look: &self.look, tb: &self.tb_cache, user_idle };
         self.ninja.update(dt, &w);
         if self.debug && self.last_debug.elapsed() > Duration::from_millis(250) {
             self.last_debug = now;
+            let ledges = self.tracker.segs.iter().filter(|s| s.surf.is_ledge()).count();
+            if self.tb_cache.len() != self.tb_logged {
+                self.tb_logged = self.tb_cache.len();
+                let names: Vec<String> = self.tb_cache.iter().map(|b| format!("{} @({},{})", b.name, b.rect.l, b.rect.t)).collect();
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(debug_log_path())
+                    .and_then(|mut f| std::io::Write::write_all(&mut f, format!("taskbar: {}\n", names.join(" | ")).as_bytes()));
+            }
             let line = format!(
-                "{:.2} act={:?} on={:?} pos=({:.0},{:.0}) segs={} wins={}\n",
+                "{:.2} act={:?} on={:?} pos=({:.0},{:.0}) segs={} ledges={} wins={} tb={} idle={:.0} clones={} pkg={}\n",
                 self.ninja.t,
                 self.ninja.act,
                 self.ninja.on,
                 self.ninja.x,
                 self.ninja.y,
                 self.tracker.segs.len(),
-                self.tracker.wins.len()
+                ledges,
+                self.tracker.wins.len(),
+                self.tb_cache.len(),
+                user_idle,
+                self.ninja.clone_count(),
+                system::packaged()
             );
             let _ = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(data_dir().join("debug.log"))
+                .open(debug_log_path())
                 .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
         }
         if self.hidden {
@@ -212,6 +257,20 @@ impl App {
     }
 }
 
+/// Debug logging: env var RAMRONIN_DEBUG, or a file named `ramronin.debug`
+/// next to the exe (then the log is written next to the exe too).
+fn debug_flag_file() -> Option<std::path::PathBuf> {
+    let exe = std::path::PathBuf::from(win::exe_path());
+    let f = exe.parent()?.join("ramronin.debug");
+    f.exists().then_some(f)
+}
+fn debug_log_path() -> std::path::PathBuf {
+    match debug_flag_file() {
+        Some(f) => f.with_file_name("debug.log"),
+        None => data_dir().join("debug.log"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // access helpers (re-entrancy safe: never panic on a busy RefCell)
 // ---------------------------------------------------------------------------
@@ -227,7 +286,8 @@ pub fn with_world<R>(f: impl FnOnce(&mut Ninja, &World) -> R) -> Option<R> {
         APP.with(|a| {
             let mut a = a.try_borrow_mut().ok()?;
             let app = a.as_mut()?;
-            let w = World { tr: &app.tracker, mem: &app.mem_cache, cfg: &cfg, look: &app.look };
+            let user_idle = (Instant::now() - app.user_active_at).as_secs_f32();
+            let w = World { tr: &app.tracker, mem: &app.mem_cache, cfg: &cfg, look: &app.look, tb: &app.tb_cache, user_idle };
             Some(f(&mut app.ninja, &w))
         })
     })
@@ -318,29 +378,33 @@ pub fn show_menu(host: HWND) {
     let cfg = cfg_get(|c| c.clone());
     let (skins, hidden) = with_app(|a| (a.skins.iter().map(|s| (s.id.clone(), s.name.clone())).collect::<Vec<_>>(), a.hidden)).unwrap_or_default();
     unsafe {
+        // compact: a few top-level entries, everything else in sub-menus
         let m = CreatePopupMenu();
-        append(m, CMD_CONTROL, "Open Control Center\tCtrl+Alt+R", false, true);
-        AppendMenuW(m, MF_SEPARATOR, 0, std::ptr::null());
-        let sub = CreatePopupMenu();
+        append(m, CMD_CONTROL, "Control Center...\tCtrl+Alt+R", false, true);
+        let ch = CreatePopupMenu();
         for (i, (id, name)) in skins.iter().enumerate() {
-            append(sub, CMD_SKIN + i, name, *id == cfg.skin, true);
+            append(ch, CMD_SKIN + i, name, *id == cfg.skin, true);
         }
-        AppendMenuW(m, MF_POPUP, sub as usize, wide("Switch character").as_ptr());
-        append(m, CMD_SHINOBI, "Shinobi Edition (jutsu)", cfg.shinobi, true);
+        AppendMenuW(ch, MF_SEPARATOR, 0, std::ptr::null());
+        append(ch, CMD_SHINOBI, "Shinobi Edition (jutsu)", cfg.shinobi, true);
+        AppendMenuW(m, MF_POPUP, ch as usize, wide("Character").as_ptr());
+        let act = CreatePopupMenu();
+        append(act, CMD_CALLOUT, "Memory callout now", false, true);
+        append(act, CMD_BONK, "Whop the top memory hog", false, true);
         let js = CreatePopupMenu();
         for (i, n) in ["Spiral chakra orb", "Wind-spiral shuriken", "Kunai volley", "Shadow clones", "Fire breath"].iter().enumerate() {
             append(js, CMD_JUTSU + i, n, false, cfg.shinobi);
         }
-        AppendMenuW(m, MF_POPUP | if cfg.shinobi { 0 } else { MF_GRAYED }, js as usize, wide("Jutsu now").as_ptr());
+        AppendMenuW(act, MF_POPUP | if cfg.shinobi { 0 } else { MF_GRAYED }, js as usize, wide("Jutsu").as_ptr());
+        append(act, CMD_RIDE, "Joyride (horse / car)", false, cfg.props.horse || cfg.props.car);
+        append(act, CMD_HOME, "Come here (to the mouse)", false, true);
+        AppendMenuW(m, MF_POPUP, act as usize, wide("Do something").as_ptr());
+        let opt = CreatePopupMenu();
+        append(opt, CMD_KEEP, "Keep-Active mode", cfg.keep.enabled, true);
+        append(opt, CMD_PAUSE, "Pause (meditate)", cfg.paused, true);
+        append(opt, CMD_HIDE, if hidden { "Show character\tCtrl+Alt+H" } else { "Hide character\tCtrl+Alt+H" }, false, true);
+        AppendMenuW(m, MF_POPUP, opt as usize, wide("Modes").as_ptr());
         AppendMenuW(m, MF_SEPARATOR, 0, std::ptr::null());
-        append(m, CMD_CALLOUT, "Memory callout now", false, true);
-        append(m, CMD_BONK, "Bonk the top memory hog", false, true);
-        append(m, CMD_KEEP, "Keep-Active mode", cfg.keep.enabled, true);
-        append(m, CMD_RIDE, "Joyride! (horse / car)", false, cfg.props.horse || cfg.props.car);
-        append(m, CMD_HOME, "Come here (to the mouse)", false, true);
-        AppendMenuW(m, MF_SEPARATOR, 0, std::ptr::null());
-        append(m, CMD_PAUSE, "Pause (meditate)", cfg.paused, true);
-        append(m, CMD_HIDE, if hidden { "Show character\tCtrl+Alt+H" } else { "Hide character\tCtrl+Alt+H" }, false, true);
         append(m, CMD_EXIT, "Exit RamRonin", false, true);
         let (cx, cy) = win::cursor_pos();
         SetForegroundWindow(host);
@@ -475,6 +539,16 @@ unsafe extern "system" fn host_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
             handle_cmd(wp);
             0
         }
+        WM_COPYDATA => {
+            // `--cmd whop <exe>` from a second process
+            let cds = &*(lp as *const COPYDATASTRUCT);
+            if cds.dwData == COPYDATA_WHOP && !cds.lpData.is_null() {
+                let bytes = std::slice::from_raw_parts(cds.lpData as *const u8, cds.cbData as usize);
+                let name = String::from_utf8_lossy(bytes).to_string();
+                with_world(|n, w| n.whop_app(&name, w));
+            }
+            1
+        }
         WM_QUERYENDSESSION => 1,
         WM_ENDSESSION => {
             cfg_get(|c| c.save());
@@ -590,6 +664,18 @@ fn main() {
     // `RamRonin.exe --cmd bonk` etc: send a command to the running instance
     if let Some(i) = args.iter().position(|a| a.eq_ignore_ascii_case("--cmd")) {
         let name = args.get(i + 1).map(|s| s.to_lowercase()).unwrap_or_default();
+        if name == "whop" {
+            // `--cmd whop chrome.exe`: whop that specific app
+            let target = args.get(i + 2).cloned().unwrap_or_default();
+            unsafe {
+                let h = FindWindowW(wide(system::HOST_CLASS).as_ptr(), std::ptr::null());
+                if !h.is_null() && !target.is_empty() {
+                    let cds = COPYDATASTRUCT { dwData: COPYDATA_WHOP, cbData: target.len() as u32, lpData: target.as_ptr() as *mut c_void };
+                    SendMessageW(h, WM_COPYDATA, 0, &cds as *const _ as LPARAM);
+                }
+            }
+            return;
+        }
         let id = match name.as_str() {
             "control" | "settings" => CMD_CONTROL,
             "callout" | "memory" => CMD_CALLOUT,
@@ -616,8 +702,17 @@ fn main() {
         }
         return;
     }
+    // started from inside a packaged app (e.g. a Store app's terminal)? Then
+    // Windows would sandbox our files and registry: relaunch via the shell.
+    if args.len() <= 1 && system::break_out_of_package() {
+        return;
+    }
     system::cleanup_old();
     let after_swap = has("--updated") || has("--installed");
+    if !after_swap && system::other_instance_window() {
+        system::signal_existing();
+        return;
+    }
     if !system::acquire_single_instance(after_swap) {
         system::signal_existing();
         return;
@@ -634,6 +729,9 @@ fn main() {
 
     let cfg = Config::load();
     CFG.with(|c| *c.borrow_mut() = cfg.clone());
+    if !cfg.packs_seeded {
+        skins::seed_examples();
+    }
     let skins = skins::load_all();
     let look = App::look_for(&skins, &cfg.skin);
 
@@ -683,6 +781,8 @@ fn main() {
     let keep: keepalive::Shared = Arc::new(Mutex::new(keepalive::KeepState { cfg: cfg.keep.clone(), ..Default::default() }));
     memory::spawn(mem.clone(), stop.clone());
     keepalive::spawn(keep.clone(), mem.clone(), stop.clone());
+    let tb: taskbar::Shared = Arc::new(Mutex::new(vec![]));
+    taskbar::spawn(tb.clone(), stop.clone());
 
     let mut tracker = Tracker::new();
     tracker.own = vec![host as isize, overlay as isize];
@@ -703,6 +803,10 @@ fn main() {
         tracker,
         mem,
         keep,
+        tb,
+        tb_cache: vec![],
+        user_active_at: Instant::now(),
+        last_beat: None,
         stop: stop.clone(),
         skins,
         look,
@@ -718,14 +822,16 @@ fn main() {
         autostart,
         taskbar_msg,
         shown: false,
-        debug: std::env::var_os("RAMRONIN_DEBUG").is_some(),
+        debug: std::env::var_os("RAMRONIN_DEBUG").is_some() || debug_flag_file().is_some(),
         last_debug: Instant::now(),
+        tb_logged: 0,
     };
     APP.with(|a| *a.borrow_mut() = Some(app));
-    if !cfg.welcomed || autostart != cfg.autostart {
+    if !cfg.welcomed || autostart != cfg.autostart || !cfg.packs_seeded {
         cfg_update(|c| {
             c.welcomed = true;
             c.autostart = autostart;
+            c.packs_seeded = true;
         });
     }
 

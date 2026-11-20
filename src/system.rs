@@ -59,6 +59,87 @@ pub fn release_single_instance() {
     }
 }
 
+/// True if a RamRonin host window already exists anywhere in this session
+/// (works even across app-container / packaged-app boundaries, unlike the
+/// mutex, whose namespace can be private to a package).
+pub fn other_instance_window() -> bool {
+    unsafe { !FindWindowW(wide(HOST_CLASS).as_ptr(), std::ptr::null()).is_null() }
+}
+
+// ---------------------------------------------------------------------------
+// packaged-parent breakout
+// ---------------------------------------------------------------------------
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetCurrentPackageFullName(len: *mut u32, name: *mut u16) -> i32;
+}
+
+/// When RamRonin is started by a packaged (MSIX / Store) app, Windows runs
+/// it inside that app's container: its %APPDATA% writes and HKCU registry
+/// changes are silently redirected to the other app's private storage, so
+/// Explorer can't open the settings folder and Install / autostart would not
+/// be visible to the real system. RamRonin itself is never packaged, so if we
+/// have package identity, ask the Windows shell (explorer.exe) to start us
+/// again as a normal desktop app and return true (the caller should exit).
+pub fn packaged() -> bool {
+    const APPMODEL_ERROR_NO_PACKAGE: i32 = 15700;
+    let mut n = 0u32;
+    let r = unsafe { GetCurrentPackageFullName(&mut n, std::ptr::null_mut()) };
+    r != APPMODEL_ERROR_NO_PACKAGE
+}
+
+/// Are our %APPDATA% writes being redirected into some packaged app's
+/// private folder? (Happens to processes started inside an MSIX app's
+/// container even when they have no package identity of their own.)
+/// Probe: write a uniquely named file and look for it under
+/// %LOCALAPPDATA%\Packages\*\LocalCache\Roaming\RamRonin.
+pub fn appdata_redirected() -> bool {
+    let name = format!(
+        "probe-{}-{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
+    );
+    let probe = data_dir().join(&name);
+    if std::fs::write(&probe, b"x").is_err() {
+        return false;
+    }
+    let mut found = false;
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        if let Ok(rd) = std::fs::read_dir(PathBuf::from(local).join("Packages")) {
+            for e in rd.flatten() {
+                if e.path().join("LocalCache").join("Roaming").join("RamRonin").join(&name).exists() {
+                    found = true;
+                    break;
+                }
+            }
+        }
+    }
+    let _ = std::fs::remove_file(&probe);
+    found
+}
+
+pub fn break_out_of_package() -> bool {
+    if !packaged() && !appdata_redirected() {
+        return false;
+    }
+    // loop guard: if we already tried a moment ago, just run here
+    let marker = std::env::temp_dir().join("RamRonin.breakout");
+    if let Ok(m) = std::fs::metadata(&marker).and_then(|m| m.modified()) {
+        if m.elapsed().map(|e| e.as_secs() < 20).unwrap_or(false) {
+            let _ = std::fs::remove_file(&marker);
+            return false;
+        }
+    }
+    let _ = std::fs::write(&marker, b"1");
+    let exe = win::exe_path();
+    if exe.is_empty() {
+        return false;
+    }
+    let explorer = std::env::var_os("WINDIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("C:\\Windows")).join("explorer.exe");
+    std::process::Command::new(explorer).arg(&exe).spawn().is_ok()
+}
+
 /// Ask the running instance to open its Control Center.
 pub fn signal_existing() {
     unsafe {

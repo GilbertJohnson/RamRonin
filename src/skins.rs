@@ -259,6 +259,23 @@ pub fn builtin() -> Vec<Skin> {
     ]
 }
 
+/// Example packs shipped inside the exe; copied into the packs folder once so
+/// they show up as regular, editable packs.
+pub const EXAMPLE_PACKS: &[(&str, &str)] = &[
+    ("sand-ninja.json", include_str!("../packs-examples/sand-ninja.json")),
+    ("retro-pack.json", include_str!("../packs-examples/retro-pack.json")),
+];
+
+pub fn seed_examples() {
+    let dir = packs_dir();
+    for (name, text) in EXAMPLE_PACKS {
+        let p = dir.join(name);
+        if !p.exists() {
+            let _ = std::fs::write(p, text);
+        }
+    }
+}
+
 /// Built-in skins + every valid pack in the packs folder.
 pub fn load_all() -> Vec<Skin> {
     let mut v = builtin();

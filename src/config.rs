@@ -99,6 +99,13 @@ pub struct Config {
     pub fps: u32,
     pub paused: bool,
     pub welcomed: bool,
+    /// example packs already copied into the packs folder (once only, so a
+    /// pack you delete stays deleted)
+    pub packs_seeded: bool,
+    /// climb window sides and stand on ledges inside app windows
+    pub climb: bool,
+    /// go rest on the taskbar after you've been away this many minutes (0 = never)
+    pub rest_after_min: u32,
 }
 
 impl Default for Config {
@@ -131,6 +138,9 @@ impl Default for Config {
             fps: 30,
             paused: false,
             welcomed: false,
+            packs_seeded: false,
+            climb: true,
+            rest_after_min: 3,
         }
     }
 }

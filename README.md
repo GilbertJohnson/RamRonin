@@ -13,14 +13,19 @@ apps (like Teams) from going idle.
 
 ## Using it
 
+RamRonin lives in the **notification area (tray) only**: one icon, no taskbar
+button (the Control Center has none either). Exit it from the right-click menu
+or the tray icon's menu (*Exit RamRonin*).
+
 | Action | How |
 |---|---|
-| Quick menu | Right-click the ninja (or the tray icon) |
-| Control Center | Menu ▸ *Open Control Center*, **Ctrl+Alt+R**, double-click the tray icon, or run `RamRonin.exe` again |
+| Quick menu | Right-click the ninja or the tray icon: *Control Center*, *Character ▸*, *Do something ▸*, *Modes ▸*, *Exit* |
+| Control Center | Menu ▸ *Control Center…*, **Ctrl+Alt+R**, click the tray icon, or run `RamRonin.exe` again |
 | Hide / show | **Ctrl+Alt+H** |
 | Pick him up / fling him | Drag him with the left mouse button |
 | Memory callout | Double-click him |
 | Scripting | `RamRonin.exe --cmd <bonk, callout, orb, shuriken, kunai, clones, fire, ride, home, pause, hide, shinobi, keep, control, exit>` |
+| Whop a specific app | `RamRonin.exe --cmd whop chrome.exe` |
 
 ### What he does
 - **Moves around:** walks, sneaks, moonwalks, runs, does the arms-back ninja
@@ -32,12 +37,28 @@ apps (like Teams) from going idle.
   rides along, gets pushed by the edge or stumbles. If the window is closed,
   minimized, maximized or covered by another window, he falls off and lands on
   something below.
+- **Climbs:** scales the side walls of windows up to their top edge (and
+  climbs back down to the taskbar), and stands on **ledges inside apps**: the
+  top edges of toolbars, ribbons, panes and a browser's page area (found from
+  the app's own child windows; this also works inside maximized windows).
 - **Naps:** sleeps with *Zzz* when RAM use is calm.
+- **Rests when you're away:** after a few minutes without mouse / keyboard
+  input (Behavior tab, default 3 min) he walks to the taskbar and sleeps until
+  you're back. Keep-Active's own F15 taps don't count as you being back.
+- **Random by design:** every pick is weighted, what he just did is less
+  likely next, and jutsu / stunts / rides have random cooldowns, so rare moves
+  (jetpack tours, taskbar sprints, red-eye stares, knocking on a window) show
+  up every now and then.
 - **Memory clouds:** comic speech or thought clouds with real numbers, for
   example `RAM 83% (13.2 GB / 15.8 GB) · Top: Chrome 2.4 GB`.
-- **Bonks:** when an app goes over your threshold, or system RAM passes your
-  alarm level, he runs to that app's window and whops it. The bonk is visual
-  only: RamRonin never closes, kills or slows down any app.
+- **Whops:** when an app goes over your threshold, or system RAM passes your
+  alarm level, he goes to wherever that app is shown and whops it with a whip,
+  mallet, wrench, crowbar, boxing gloves or rubber chicken, or a jutsu:
+  - its window, if any part of it is visible (top edge, or a ledge inside it);
+  - otherwise its **taskbar button or tray icon** (minimized, hidden or
+    tray-only apps), which flashes red with every hit.
+
+  The whop is visual only: RamRonin never closes, kills or slows down any app.
 
 ### Shinobi Edition (toggle in the Control Center or the right-click menu)
 The jutsu are original drawings inspired by ninja anime. This is a fan-made
@@ -46,11 +67,17 @@ toy with no affiliation.
 - Spiral chakra orb (Rasengan-style), charged in the hand, then a dash and
   "RASEN-BONK!"
 - Wind-spiral shuriken (Rasen-shuriken-style), held overhead, thrown, and
-  explodes
+  explodes. Against a memory hog he sometimes throws it **from across the
+  screen** straight at the hog's window or taskbar button.
 - Three-tomoe red eye (Sharingan-style): his eye turns red during fights, a
   big eye flash appears, and a red eye streak follows him when he sprints
-- Kunai volley (the kunai stick into the window edge), shadow clones, fire
-  breath, and a body-flicker teleport in a puff of smoke
+- Kunai volley (the kunai stick into the window edge), fire breath, and a
+  body-flicker teleport in a puff of smoke
+- Shadow clones: 2-4 clones appear for 10 seconds and **each does its own
+  thing** (dancing, whopping, flips, handstand, pacing, charging an orb,
+  throwing kunai, meditating, headspins...), while he stays to show off.
+- The red eye no longer fires with every attack: stares come at random, with
+  a pause before whatever follows.
 - **Substitution:** if you try to grab him he sometimes leaves a log in your
   hand and reappears somewhere else.
 
@@ -75,7 +102,8 @@ Stickman Fighter, Shadow Ninja, Robo-Bonk 3000, Grandpa Rampage and Neon Disco.
 
 A character is pure data, so new ones can be added without rebuilding. Put a
 `.json` file in `%APPDATA%\RamRonin\packs`, or use *Control Center ▸ Import
-pack…*:
+pack…*. The example packs (Sand Ninja, Lime Robot, Ghost Monk) are built into
+the exe and copied into that folder on first run:
 
 ```json
 {
@@ -107,9 +135,17 @@ pack…*:
   kept. The flow is in `system::update_from_file`; a GitHub releases check can
   later download the asset and call that same function.
 - **Uninstall:** *Apps & features ▸ RamRonin*, or `RamRonin.exe --uninstall`.
+- **No admin rights, ever:** the manifest says `asInvoker` and everything
+  goes to per-user locations, so Windows never shows a UAC prompt.
+- **Started from a Store / packaged app?** (for example a terminal inside such
+  an app) Windows would silently redirect RamRonin's settings and registry
+  into that app's private storage, so Explorer couldn't open the settings
+  folder. RamRonin detects this and restarts itself through the Windows shell
+  as a normal desktop app.
 - **Settings:** `%APPDATA%\RamRonin\config.json`. If something goes wrong,
   details go to `crash.log` in the same folder. Set the environment variable
-  `RAMRONIN_DEBUG=1` to also write a `debug.log` of his state.
+  `RAMRONIN_DEBUG=1` (or put an empty `ramronin.debug` file next to the exe)
+  to also write a `debug.log` of his state.
 
 ## Building
 
@@ -154,7 +190,10 @@ src/
                (ab_glyph with the system's Segoe UI)
   skins.rs     data-driven characters (built-ins + JSON packs)
   tracker.rs   enumerates app windows in z-order, computes the *visible* parts of
-               each window's top edge (occlusion-aware), monitors, DPI
+               each window's top edge and inner ledges (occlusion-aware),
+               monitors, DPI
+  taskbar.rs   background thread: UI Automation on Explorer's taskbars to find
+               each app's taskbar button / tray icon
   memory.rs    background thread: GlobalMemoryStatusEx + per-app working sets
                (Toolhelp + GetProcessMemoryInfo), grouped by exe name
   keepalive.rs background thread: Keep-Active watchdog

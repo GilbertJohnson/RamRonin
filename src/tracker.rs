@@ -6,7 +6,7 @@ use crate::util::*;
 use crate::win::{self, Monitor, RectI};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 #[derive(Clone, Debug)]
@@ -19,11 +19,31 @@ pub struct WinInfo {
     pub maximized: bool,
 }
 
+/// Something the ninja can stand on.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Surf {
+    /// the taskbar edge / bottom of a monitor's work area
     Floor(usize),
-    Win(isize),
+    /// a window: (hwnd, dy). dy == 0 is the window's top edge (title bar /
+    /// tab strip); dy > 0 is an inner ledge: the top edge of a section inside
+    /// the app (toolbar, pane, browser content area...), relative to the top.
+    Win(isize, i32),
 }
+
+impl Surf {
+    pub fn hwnd(&self) -> Option<isize> {
+        match self {
+            Surf::Win(h, _) => Some(*h),
+            _ => None,
+        }
+    }
+    pub fn is_ledge(&self) -> bool {
+        matches!(self, Surf::Win(_, d) if *d != 0)
+    }
+}
+
+/// Inner ledge relative to its window: (dy, x0, x1).
+type Ledge = (i32, i32, i32);
 
 #[derive(Clone, Copy, Debug)]
 pub struct Seg {
@@ -48,6 +68,9 @@ pub struct Tracker {
     my_pid: u32,
     /// window handles we own (overlay, control center) – never targets
     pub own: Vec<isize>,
+    /// look for ledges inside windows (child windows)
+    pub ledges_on: bool,
+    ledge_cache: HashMap<isize, (Instant, RectI, Vec<Ledge>)>,
 }
 
 const SKIP_CLASSES: &[&str] = &[
@@ -76,6 +99,8 @@ impl Tracker {
             names_at: Instant::now(),
             my_pid: std::process::id(),
             own: vec![],
+            ledges_on: true,
+            ledge_cache: HashMap::new(),
         };
         t.compute_vs();
         t.refresh();
@@ -195,58 +220,69 @@ impl Tracker {
             order.push(Some(wins.len() - 1));
         }
 
-        // visible top-edge segments
+        // visible top-edge segments (+ inner ledges of the topmost windows)
         let mut segs = Vec::new();
+        let mut ledge_budget = 10;
+        let mut seen = vec![];
         for (zi, slot) in order.iter().enumerate() {
             let Some(wi) = slot else { continue };
             let w = &wins[*wi];
-            let y = w.rect.t;
-            // must have head-room on its monitor
-            let Some(mon) = self.mons.iter().find(|m| {
-                let cx = (w.rect.l + w.rect.r) / 2;
-                cx >= m.rect.l && cx < m.rect.r && y >= m.rect.t && y < m.rect.b
-            }) else {
+            seen.push(w.hwnd);
+            let Some(mon) = self.mons.iter().find(|m| m.rect.contains((w.rect.l + w.rect.r) as f32 / 2.0, (w.rect.t + 10) as f32)).cloned() else {
                 continue;
             };
-            if y < mon.rect.t + (95 * mon.dpi / 96) as i32 || y > mon.work.b - 30 {
-                continue;
-            }
-            let mut ivs = vec![(w.rect.l.max(mon.rect.l) as f32 + 6.0, w.rect.r.min(mon.rect.r) as f32 - 6.0)];
-            for occ in &occluders[..zi] {
-                if occ.w() <= 0 {
-                    continue;
+            let y = w.rect.t;
+            let above = &occluders[..zi];
+            // top edge: needs head-room on its monitor
+            if !w.maximized && y >= mon.rect.t + (95 * mon.dpi / 96) as i32 && y <= mon.work.b - 30 {
+                for (x0, x1) in visible_spans(y, w.rect.l.max(mon.rect.l) as f32 + 6.0, w.rect.r.min(mon.rect.r) as f32 - 6.0, above) {
+                    if x1 - x0 >= 70.0 {
+                        segs.push(Seg { y: y as f32, x0, x1, surf: Surf::Win(w.hwnd, 0) });
+                    }
                 }
-                // covers the strip just above / on the edge?
-                if occ.t <= y + 2 && occ.b > y - 6 {
-                    let (a, b) = (occ.l as f32 - 4.0, occ.r as f32 + 4.0);
-                    let mut next = Vec::new();
-                    for (x0, x1) in ivs {
-                        if b <= x0 || a >= x1 {
-                            next.push((x0, x1));
-                        } else {
-                            if a > x0 {
-                                next.push((x0, a));
-                            }
-                            if b < x1 {
-                                next.push((b, x1));
+            }
+            // inner ledges
+            if self.ledges_on && ledge_budget > 0 {
+                ledge_budget -= 1;
+                let stale = self.ledge_cache.get(&w.hwnd).map(|c| c.0.elapsed() > Duration::from_millis(900) || c.1.w() != w.rect.w() || c.1.h() != w.rect.h()).unwrap_or(true);
+                if stale {
+                    let l = find_ledges(w.hwnd as HWND, w.rect);
+                    self.ledge_cache.insert(w.hwnd, (Instant::now(), w.rect, l));
+                }
+                if let Some((_, _, ls)) = self.ledge_cache.get(&w.hwnd) {
+                    for &(dy, lx0, lx1) in ls {
+                        let ly = y + dy;
+                        if ly < mon.rect.t + (60 * mon.dpi / 96) as i32 || ly > mon.work.b - 40 {
+                            continue;
+                        }
+                        let x0 = ((w.rect.l + lx0).max(mon.rect.l)) as f32 + 4.0;
+                        let x1 = ((w.rect.l + lx1).min(mon.rect.r)) as f32 - 4.0;
+                        for (a, b) in visible_spans(ly, x0, x1, above) {
+                            if b - a >= 70.0 {
+                                segs.push(Seg { y: ly as f32, x0: a, x1: b, surf: Surf::Win(w.hwnd, dy) });
                             }
                         }
                     }
-                    ivs = next;
-                }
-            }
-            for (x0, x1) in ivs {
-                if x1 - x0 >= 70.0 {
-                    segs.push(Seg { y: y as f32, x0, x1, surf: Surf::Win(w.hwnd) });
                 }
             }
         }
+        self.ledge_cache.retain(|h, _| seen.contains(h));
         for (i, m) in self.mons.iter().enumerate() {
             segs.push(Seg { y: m.work.b as f32, x0: m.work.l as f32, x1: m.work.r as f32, surf: Surf::Floor(i) });
         }
         self.wins = wins;
         self.minimized = minimized;
         self.segs = segs;
+    }
+
+    /// Where a window surface is right now: (y, left, right). None if the
+    /// window vanished; for the top edge also None when maximized.
+    pub fn live_surface(h: isize, dy: i32) -> Option<(f32, f32, f32, RectI)> {
+        let (r, maxed) = Self::live_rect(h)?;
+        if dy == 0 && maxed {
+            return None;
+        }
+        Some(((r.t + dy) as f32, r.l as f32, r.r as f32, r))
     }
 
     pub fn floor_y(&self, m: usize) -> f32 {
@@ -321,4 +357,93 @@ impl Tracker {
     pub fn has_window(&self, name: &str) -> bool {
         self.wins.iter().any(|w| w.name == name) || self.minimized.iter().any(|w| w.name == name)
     }
+
+    /// Window titles of an app (visible and minimized).
+    pub fn titles_of(&self, name: &str) -> Vec<String> {
+        self.wins.iter().chain(self.minimized.iter()).filter(|w| w.name == name).map(|w| w.title.clone()).collect()
+    }
+}
+
+/// Parts of the horizontal line y in [x0, x1] that no window above covers.
+fn visible_spans(y: i32, x0: f32, x1: f32, above: &[RectI]) -> Vec<(f32, f32)> {
+    let mut ivs = vec![(x0, x1)];
+    for occ in above {
+        if occ.w() <= 0 {
+            continue;
+        }
+        // covers the strip just above / on the edge?
+        if occ.t <= y + 2 && occ.b > y - 6 {
+            let (a, b) = (occ.l as f32 - 4.0, occ.r as f32 + 4.0);
+            let mut next = Vec::new();
+            for (s0, s1) in ivs {
+                if b <= s0 || a >= s1 {
+                    next.push((s0, s1));
+                } else {
+                    if a > s0 {
+                        next.push((s0, a));
+                    }
+                    if b < s1 {
+                        next.push((b, s1));
+                    }
+                }
+            }
+            ivs = next;
+        }
+    }
+    ivs
+}
+
+/// Ledges inside a window: top edges of its visible child windows (panes,
+/// toolbars, list views, a browser's page area...). Relative to `wr`.
+fn find_ledges(h: HWND, wr: RectI) -> Vec<Ledge> {
+    unsafe extern "system" fn cb(c: HWND, l: LPARAM) -> BOOL {
+        let v = &mut *(l as *mut Vec<HWND>);
+        if v.len() < 600 {
+            v.push(c);
+        }
+        1
+    }
+    let mut kids: Vec<HWND> = vec![];
+    unsafe {
+        EnumChildWindows(h, Some(cb), &mut kids as *mut _ as LPARAM);
+    }
+    let min_w = 120.max(wr.w() / 8);
+    let mut raw: Vec<Ledge> = vec![];
+    for c in kids {
+        unsafe {
+            if IsWindowVisible(c) == 0 {
+                continue;
+            }
+            let mut r: RECT = std::mem::zeroed();
+            if GetWindowRect(c, &mut r) == 0 {
+                continue;
+            }
+            let (l, t, rr, b) = (r.left.max(wr.l), r.top, r.right.min(wr.r), r.bottom.min(wr.b));
+            if rr - l < min_w || b - t < 40 {
+                continue;
+            }
+            let dy = t - wr.t;
+            if dy < 26 || t > wr.b - 70 {
+                continue;
+            }
+            raw.push((dy, l - wr.l, rr - wr.l));
+        }
+    }
+    // merge ledges at (almost) the same height
+    raw.sort();
+    let mut out: Vec<Ledge> = vec![];
+    for (dy, a, b) in raw {
+        if let Some(last) = out.last_mut() {
+            if (dy - last.0).abs() <= 3 && a <= last.2 + 10 && b >= last.1 - 10 {
+                last.1 = last.1.min(a);
+                last.2 = last.2.max(b);
+                continue;
+            }
+        }
+        out.push((dy, a, b));
+    }
+    // keep the widest few
+    out.sort_by_key(|l| -(l.2 - l.1));
+    out.truncate(6);
+    out
 }

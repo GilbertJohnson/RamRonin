@@ -218,13 +218,23 @@ pub fn car_seat(ground: P, facing: f32, s: f32) -> P {
     (ground.0 - 6.0 * s * facing, ground.1 - 15.0 * s)
 }
 
-pub fn car(g: &mut Gfx, ground: P, facing: f32, s: f32, t: f32, speed: f32) {
+/// Car paint jobs (one is picked per ride).
+pub const CAR_COLORS: &[Col] = &[
+    Col::rgb(20, 120, 230),  // electric blue
+    Col::rgb(255, 196, 0),   // taxi yellow
+    Col::rgb(40, 190, 110),  // racing green
+    Col::rgb(150, 70, 230),  // purple
+    Col::rgb(255, 120, 20),  // orange
+    Col::rgb(0, 190, 200),   // teal
+];
+
+pub fn car(g: &mut Gfx, ground: P, facing: f32, s: f32, t: f32, speed: f32, paint: Col) {
     let f = facing;
     let x = |v: f32| ground.0 + v * s * f;
     let y = |v: f32| ground.1 - v * s;
     let bounce = (t * 25.0).sin() * 0.8 * (speed > 1.0) as u8 as f32;
     let yb = |v: f32| y(v + bounce);
-    let red = Col::rgb(215, 40, 40);
+    let red = paint;
     // body
     g.poly(
         &[(x(-32.0), yb(6.0)), (x(34.0), yb(6.0)), (x(36.0), yb(14.0)), (x(28.0), yb(20.0)), (x(-30.0), yb(20.0)), (x(-34.0), yb(14.0))],
