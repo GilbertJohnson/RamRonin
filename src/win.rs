@@ -191,17 +191,104 @@ pub fn message_box(owner: HWND, text: &str, title: &str, flags: u32) -> i32 {
     unsafe { MessageBoxW(owner, wide(text).as_ptr(), wide(title).as_ptr(), flags) }
 }
 
-/// Tap F15 – a real key that no application uses. It resets the system idle
-/// timer (what Teams & co. watch) without ever changing what the user types.
-pub fn tap_f15() {
+/// Tap F15 - a real key that no application uses. It resets the system idle
+/// timer without ever changing what the user types. Returns how many input
+/// events Windows accepted (2 = both; 0 = blocked, e.g. on the lock screen).
+pub fn tap_f15() -> u32 {
     unsafe {
         let mut inputs: [INPUT; 2] = zeroed();
         inputs[0].r#type = INPUT_KEYBOARD;
         inputs[0].Anonymous.ki = KEYBDINPUT { wVk: VK_F15, wScan: 0, dwFlags: 0, time: 0, dwExtraInfo: 0 };
         inputs[1].r#type = INPUT_KEYBOARD;
         inputs[1].Anonymous.ki = KEYBDINPUT { wVk: VK_F15, wScan: 0, dwFlags: KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 };
-        SendInput(2, inputs.as_ptr(), size_of::<INPUT>() as i32);
+        SendInput(2, inputs.as_ptr(), size_of::<INPUT>() as i32)
     }
+}
+
+/// Nudge the mouse one pixel right and back (plus a zero-distance move).
+/// Some apps only count mouse movement as activity. The cursor ends up where
+/// it was. Returns how many input events Windows accepted (3 = all).
+pub fn nudge_mouse() -> u32 {
+    unsafe {
+        let before = cursor_pos();
+        let mv = |dx: i32| {
+            let mut i: INPUT = zeroed();
+            i.r#type = INPUT_MOUSE;
+            i.Anonymous.mi = MOUSEINPUT { dx, dy: 0, mouseData: 0, dwFlags: MOUSEEVENTF_MOVE, time: 0, dwExtraInfo: 0 };
+            i
+        };
+        let inputs = [mv(0), mv(1), mv(-1)];
+        let n = SendInput(inputs.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32);
+        // with pointer acceleration +1/-1 may not cancel out exactly
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        if cursor_pos() != before {
+            SetCursorPos(before.0, before.1);
+        }
+        n
+    }
+}
+
+/// Is the session on the lock screen / secure desktop? (Injected input goes
+/// nowhere then, and every chat app shows you as Away anyway.)
+pub fn session_locked() -> bool {
+    use windows_sys::Win32::System::StationsAndDesktops::*;
+    unsafe {
+        let d = OpenInputDesktop(0, 0, DESKTOP_SWITCHDESKTOP);
+        if d.is_null() {
+            return true;
+        }
+        let ok = SwitchDesktop(d) != 0;
+        CloseDesktop(d);
+        !ok
+    }
+}
+
+/// Bring `h` to the foreground even from a background process (attaches to
+/// the current foreground thread's input queue for the call).
+pub fn force_foreground(h: HWND) -> bool {
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg == h {
+            return true;
+        }
+        let me = GetCurrentThreadId();
+        let other = if fg.is_null() { 0 } else { GetWindowThreadProcessId(fg, std::ptr::null_mut()) };
+        let attached = other != 0 && other != me && AttachThreadInput(me, other, 1) != 0;
+        if IsIconic(h) != 0 {
+            ShowWindow(h, SW_RESTORE);
+        }
+        BringWindowToTop(h);
+        SetForegroundWindow(h);
+        if attached {
+            AttachThreadInput(me, other, 0);
+        }
+        GetForegroundWindow() == h
+    }
+}
+
+/// The main window of the first running process with this exe name.
+pub fn main_window_of(exe: &str) -> Option<HWND> {
+    let want = exe.to_lowercase();
+    let mut best: Option<(HWND, i64)> = None;
+    for h in enum_windows() {
+        unsafe {
+            if IsWindowVisible(h) == 0 && IsIconic(h) == 0 {
+                continue;
+            }
+            if !GetWindow(h, GW_OWNER).is_null() || window_title(h).is_empty() {
+                continue;
+            }
+        }
+        let Some(path) = process_path(window_pid(h)) else { continue };
+        if file_name(&path).to_lowercase() != want {
+            continue;
+        }
+        let area = window_rect(h).map(|r| r.w() as i64 * r.h() as i64).unwrap_or(0);
+        if best.map(|b| area > b.1).unwrap_or(true) {
+            best = Some((h, area));
+        }
+    }
+    best.map(|b| b.0)
 }
 
 pub fn shell_open(target: &str, args: Option<&str>) -> bool {

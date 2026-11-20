@@ -50,6 +50,7 @@ const ID_LB_RUNNING: u16 = 117;
 const ID_LB_KEPT: u16 = 118;
 const ID_ADD_TEAMS: u16 = 120;
 const ID_TAB: u16 = 121;
+const ID_KEEP_TEST: u16 = 122;
 const ID_BIND_BASE: u16 = 2000;
 
 type GetB = fn(&Config) -> bool;
@@ -84,6 +85,8 @@ struct Cc {
     ed_keep: HWND,
     ed_ignore: HWND,
     st_keep: HWND,
+    st_test: HWND,
+    bt_test: HWND,
     st_install: HWND,
     running: Vec<String>,
     mem_lines: Vec<String>,
@@ -502,9 +505,9 @@ Jutsu effects are original drawings inspired by ninja anime; this is a fan-made 
         y0 + 28,
         790,
         36,
-        "While a selected app is running and you have been idle for a while, RamRonin taps F15 - a key no app uses - \
-so Windows and the app see activity. It never fires while you type or move the mouse, and it never touches your cursor. \
-The ninja keeps roaming as usual and now and then pops by to poke the app.",
+        "While a selected app is running and you have been idle for a while, RamRonin sends a heartbeat (choose how below) \
+so Windows and the app see activity. It never fires while you type or move the mouse. \
+Not sure what works for your Teams? Run the self-test while you're away from the PC.",
     );
     b.label(24, y0 + 72, 300, 20, "Apps with open windows:");
     let lb_running = b.listbox(24, y0 + 94, 300, 200, ID_LB_RUNNING, true);
@@ -520,7 +523,13 @@ The ninja keeps roaming as usual and now and then pops by to poke the app.",
     b.check(24, y0 + 366, 260, "Keep PC && display awake", |c| c.keep.prevent_sleep, |c, v| c.keep.prevent_sleep = v);
     b.check(290, y0 + 366, 260, "Relaunch an app if it closes", |c| c.keep.relaunch, |c, v| c.keep.relaunch = v);
     b.check(560, y0 + 366, 260, "Ninja visits kept apps", |c| c.keep.visits, |c, v| c.keep.visits = v);
-    let st_keep = b.label(24, y0 + 400, 790, 50, "");
+    b.label(24, y0 + 398, 90, 22, "Heartbeat:");
+    b.check(114, y0 + 396, 130, "F15 key tap", |c| c.keep.key, |c, v| c.keep.key = v);
+    b.check(250, y0 + 396, 240, "Mouse nudge (1 px and back)", |c| c.keep.mouse, |c, v| c.keep.mouse = v);
+    b.check(496, y0 + 396, 320, "Bring the app's window forward (3 min)", |c| c.keep.wake, |c, v| c.keep.wake = v);
+    let st_keep = b.label(24, y0 + 430, 600, 40, "");
+    let bt_test = b.button(640, y0 + 432, 174, 32, "Run self-test...", ID_KEEP_TEST);
+    let st_test = b.label(24, y0 + 472, 790, 38, "");
 
     // ---------------- page 4: Behavior ----------------
     b.page = 4;
@@ -601,6 +610,8 @@ Your settings and character packs are kept. (Online updates from GitHub can plug
         ed_keep,
         ed_ignore,
         st_keep,
+        st_test,
+        bt_test,
         st_install,
         running: vec![],
         mem_lines: vec![],
@@ -615,6 +626,10 @@ Your settings and character packs are kept. (Online updates from GitHub can plug
 // ---------------------------------------------------------------------------
 
 fn set_text(h: HWND, s: &str) {
+    // skip unchanged text: avoids flicker on the periodic refresh
+    if get_text(h) == s {
+        return;
+    }
     unsafe {
         SetWindowTextW(h, wide(s).as_ptr());
     }
@@ -778,6 +793,8 @@ fn refresh_lists(force: bool) {
             }
             s += &format!("   You've been idle {}s.", win::idle_ms() / 1000);
             set_text(cc.st_keep, &s);
+            set_text(cc.st_test, &k.test_status);
+            set_text(cc.bt_test, if k.test_running { "Stop self-test" } else { "Run self-test..." });
         }
     });
 }
@@ -865,6 +882,7 @@ fn on_command(id: u16, code: u16, ctl: HWND) {
             add_kept(names.unwrap_or_default());
         }
         ID_ADD_TEAMS => add_kept(vec!["ms-teams.exe".into(), "teams.exe".into()]),
+        ID_KEEP_TEST => keep_test_toggle(),
         ID_ADD_NAME => {
             let t = CC.with(|c| c.borrow().as_ref().map(|cc| (get_text(cc.ed_keep), cc.ed_keep)));
             if let Some((t, ed)) = t {
@@ -1193,4 +1211,36 @@ unsafe extern "system" fn cc_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         }
         _ => DefWindowProcW(h, msg, wp, lp),
     }
+}
+
+/// Start or stop the Keep-Active self-test.
+fn keep_test_toggle() {
+    let Some(keep) = with_app(|a| a.keep.clone()) else { return };
+    let running = keep.lock().map(|k| k.test_running).unwrap_or(false);
+    if running {
+        if let Ok(mut k) = keep.lock() {
+            k.test_cmd = Some(false);
+        }
+        return;
+    }
+    let total = 46;
+    let q = format!(
+        "Keep-Active self-test (about {} minutes)\n\n\
+RamRonin tries each heartbeat method in turn while you're away: F15 key only, mouse nudge only, bringing the Teams window forward, \
+and finally nothing at all (to confirm Teams does go Away). It records the Windows idle timer and your Teams presence \
+(from Teams' own log files) in keep-test.log, which opens when it's done.\n\n\
+Before you start:\n\
+  - Teams must be running and signed in, showing you as Available.\n\
+  - Close the Teams app on your phone (it would keep you Available by itself).\n\
+  - Then don't touch the mouse or keyboard until it's finished.\n\n\
+Start the test now?",
+        total
+    );
+    if win::message_box(hwnd(), &q, "RamRonin self-test", MB_YESNO | MB_ICONQUESTION) != IDYES {
+        return;
+    }
+    if let Ok(mut k) = keep.lock() {
+        k.test_cmd = Some(true);
+        k.test_status = "Self-test starting...".into();
+    };
 }

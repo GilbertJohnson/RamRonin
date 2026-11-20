@@ -86,12 +86,27 @@ Pick one or more apps (running-apps list, "+ Teams" button, or type an exe
 name). While one of them is running:
 1. Windows is asked not to sleep or turn off the display
    (`SetThreadExecutionState`).
-2. If you've been idle for the configured time, RamRonin taps **F15** every
-   N seconds. No keyboard has an F15 key and no app uses it, but the tap
-   resets the system idle timer that Teams, Slack and similar apps use for
-   "Away". It **never** fires while you are typing or using the mouse, and it
-   never moves your cursor.
+2. If you've been idle for the configured time, RamRonin sends a
+   **heartbeat** every N seconds. Choose any mix of:
+   - **F15 key tap.** No keyboard has an F15 key and no app uses it, but it
+     resets the Windows idle timer.
+   - **Mouse nudge.** Moves the mouse 1 pixel and straight back; the cursor
+     stays where it was. Some apps only count mouse movement.
+   - **Bring the app's window forward** (at most every 3 minutes). The new
+     Teams may only count activity in its own window. RamRonin briefly
+     brings it to the front, then gives focus back to what you had open and
+     re-minimizes it if it was minimized.
+
+   It **never** fires while you are typing or using the mouse.
 3. Optionally, it relaunches a kept app if it closes.
+
+**Self-test:** *Control Center ▸ Keep-Active ▸ Run self-test…* takes about
+46 minutes while you're away from the PC. It tries each method in turn
+(F15 only, mouse only, window forward, then nothing as a baseline). It
+records the Windows idle timer and your Teams presence, read from Teams' own
+log files, in `%APPDATA%\RamRonin\keep-test.log`, which opens when it's done.
+Close Teams on your phone first, because the phone app keeps you Available
+by itself.
 
 The ninja keeps roaming as usual and now and then pops over to poke the kept
 app ("Stay awake, Teams!").

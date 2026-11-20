@@ -45,6 +45,11 @@ fn append(file: &str, line: &str) {
         .and_then(|mut f| f.write_all(format!("[{}] pid {} {}\n", stamp(), std::process::id(), line).as_bytes()));
 }
 
+/// One line in another log file in the data folder.
+pub fn log_to(file: &str, msg: &str) {
+    append(file, msg);
+}
+
 /// One line in startup.log.
 pub fn log(msg: impl AsRef<str>) {
     append("startup.log", msg.as_ref());
