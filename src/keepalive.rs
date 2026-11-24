@@ -192,6 +192,28 @@ fn teams_presence() -> Option<(String, String, &'static str)> {
     found.pop().map(|f| (f.1, f.2, f.3))
 }
 
+/// Why the presence couldn't be read: which Teams log was found and whether
+/// it mentions presence at all (counts only, no log content).
+fn presence_diag() -> String {
+    let Some(local) = std::env::var_os("LOCALAPPDATA") else { return "no LOCALAPPDATA".into() };
+    let dir = PathBuf::from(local).join("Packages\\MSTeams_8wekyb3d8bbwe\\LocalCache\\Microsoft\\MSTeams\\Logs");
+    if !dir.exists() {
+        return "new Teams log folder not found".into();
+    }
+    let Some((p, _)) = newest_file(dir, "msteams", ".log") else { return "no MSTeams_*.log in the new Teams log folder".into() };
+    let text = tail(&p, 2 * 1024 * 1024).unwrap_or_default().to_lowercase();
+    let count = |k: &str| text.matches(k).count();
+    format!(
+        "newest log {}: {} KB read, lines with 'availability' {}, 'presence' {}, 'away' {}, 'available' {}",
+        p.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default(),
+        text.len() / 1024,
+        count("availability"),
+        count("presence"),
+        count("away"),
+        count("available")
+    )
+}
+
 // ---------------------------------------------------------------------------
 // self-test
 // ---------------------------------------------------------------------------
@@ -247,7 +269,10 @@ impl Test {
         let p = teams_presence();
         match &p {
             Some((s, excerpt, src)) => tlog(&format!("Teams presence now: {} (from {} log: \"{}\")", s, src, excerpt)),
-            None => tlog("Teams presence: could not read it from Teams' log files. Watch your status on screen instead."),
+            None => {
+                tlog("Teams presence: could not read it from Teams' log files. Watch your status on screen instead.");
+                tlog(&format!("  (presence diagnostics: {})", presence_diag()));
+            }
         }
         let total: u64 = PHASES.iter().map(|p| p.mins).sum();
         tlog(&format!("Phases ({} min total), heartbeat every {}s once you're idle:", total, TEST_EVERY.as_secs()));

@@ -527,7 +527,7 @@ Not sure what works for your Teams? Run the self-test while you're away from the
     b.check(560, y0 + 366, 260, "Ninja visits kept apps", |c| c.keep.visits, |c, v| c.keep.visits = v);
     b.label(24, y0 + 398, 90, 22, "Heartbeat:");
     b.check(114, y0 + 396, 130, "F15 key tap", |c| c.keep.key, |c, v| c.keep.key = v);
-    b.check(250, y0 + 396, 240, "Mouse nudge (1 px and back)", |c| c.keep.mouse, |c, v| c.keep.mouse = v);
+    b.check(250, y0 + 396, 240, "Mouse nudge (best for Teams)", |c| c.keep.mouse, |c, v| c.keep.mouse = v);
     b.check(496, y0 + 396, 320, "Bring the app's window forward (3 min)", |c| c.keep.wake, |c, v| c.keep.wake = v);
     let st_keep = b.label(24, y0 + 430, 600, 40, "");
     let bt_test = b.button(640, y0 + 432, 174, 32, "Run self-test...", ID_KEEP_TEST);
