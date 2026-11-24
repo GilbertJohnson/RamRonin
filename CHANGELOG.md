@@ -5,10 +5,11 @@
 ### Fixes
 - **RamRonin now starts on PCs that were switched on less than an hour ago.**
   Before, it crashed right after launch and nothing appeared on screen.
-- **Keep-Active works with the new Teams.** Keep-Active now also nudges the
-  mouse by 1 pixel and straight back while you're away; the cursor stays where
-  it was. The new Teams counts mouse movement, while the F15 tap alone did not
-  keep it Available.
+- **Keep-Active works with the new Teams.** While you're away, Keep-Active
+  now also nudges the mouse by 1 pixel and straight back (the cursor stays
+  where it was). Every 3 minutes it also briefly brings the Teams window
+  forward, then gives focus back to what you had open. The F15 tap alone did
+  not keep the new Teams Available.
 - **A double right-click no longer opens the Control Center or exits
   RamRonin.** The menu opens under the pointer, so the second click used to
   pick an item.

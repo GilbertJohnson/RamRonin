@@ -87,7 +87,8 @@ name). While one of them is running:
 1. Windows is asked not to sleep or turn off the display
    (`SetThreadExecutionState`).
 2. If you've been idle for the configured time, RamRonin sends a
-   **heartbeat** every N seconds. Choose any mix of:
+   **heartbeat** every N seconds. Choose any mix (all three are on by
+   default):
    - **F15 key tap.** No keyboard has an F15 key and no app uses it, but it
      resets the Windows idle timer.
    - **Mouse nudge.** Moves the mouse 1 pixel and straight back; the cursor

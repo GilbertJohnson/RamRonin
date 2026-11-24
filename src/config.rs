@@ -74,7 +74,7 @@ pub struct Keep {
 }
 impl Default for Keep {
     fn default() -> Self {
-        Keep { enabled: false, apps: vec![], interval_s: 60, idle_s: 60, prevent_sleep: true, relaunch: false, visits: true, key: true, mouse: true, wake: false }
+        Keep { enabled: false, apps: vec![], interval_s: 60, idle_s: 60, prevent_sleep: true, relaunch: false, visits: true, key: true, mouse: true, wake: true }
     }
 }
 
