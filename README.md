@@ -86,12 +86,28 @@ Pick one or more apps (running-apps list, "+ Teams" button, or type an exe
 name). While one of them is running:
 1. Windows is asked not to sleep or turn off the display
    (`SetThreadExecutionState`).
-2. If you've been idle for the configured time, RamRonin taps **F15** every
-   N seconds. No keyboard has an F15 key and no app uses it, but the tap
-   resets the system idle timer that Teams, Slack and similar apps use for
-   "Away". It **never** fires while you are typing or using the mouse, and it
-   never moves your cursor.
+2. If you've been idle for the configured time, RamRonin sends a
+   **heartbeat** every N seconds. Choose any mix (all three are on by
+   default):
+   - **F15 key tap.** No keyboard has an F15 key and no app uses it, but it
+     resets the Windows idle timer.
+   - **Mouse nudge.** Moves the mouse 1 pixel and straight back; the cursor
+     stays where it was. Some apps only count mouse movement.
+   - **Bring the app's window forward** (at most every 3 minutes). The new
+     Teams may only count activity in its own window. RamRonin briefly
+     brings it to the front, then gives focus back to what you had open and
+     re-minimizes it if it was minimized.
+
+   It **never** fires while you are typing or using the mouse.
 3. Optionally, it relaunches a kept app if it closes.
+
+**Self-test:** *Control Center ▸ Keep-Active ▸ Run self-test…* takes about
+46 minutes while you're away from the PC. It tries each method in turn
+(F15 only, mouse only, window forward, then nothing as a baseline). It
+records the Windows idle timer and your Teams presence, read from Teams' own
+log files, in `%APPDATA%\RamRonin\keep-test.log`, which opens when it's done.
+Close Teams on your phone first, because the phone app keeps you Available
+by itself.
 
 The ninja keeps roaming as usual and now and then pops over to poke the kept
 app ("Stay awake, Teams!").
@@ -99,6 +115,36 @@ app ("Stay awake, Teams!").
 ## Characters and packs (extensible)
 Built-in characters: **Shinobi (red band)** (the default), Crimson Eye,
 Stickman Fighter, Shadow Ninja, Robo-Bonk 3000, Grandpa Rampage and Neon Disco.
+
+### GIF characters
+*Control Center ▸ Character ▸ Import GIF…* turns any animated GIF into a
+character, for example a clip of your favourite comedian running. It runs,
+perches on windows, naps and whops memory hogs like the ninja. It plays the GIF
+while moving, holds the first frame while standing, and is mirrored when it
+turns around. The GIF is copied into your packs folder with a small `.json`
+next to it:
+
+```json
+{
+  "id": "gif_vadivelu_run", "name": "Vadivelu Run", "body": "#111116",
+  "gif": "vadivelu_run.gif", "gif_idle": null,
+  "gif_key": "", "gif_sticker": true, "gif_faces": "right", "gif_scale": 1.25,
+  "phrases": ["Aaha... kilambitaangayaa!"]
+}
+```
+
+- **Background:** GIFs with a transparent background are drawn as they are.
+  `"gif_key": "auto"` removes a plain background colour, such as a green
+  screen; the importer sets this when the corners share one colour. Any other
+  GIF is shown as a rounded sticker with a white border.
+- **`gif_faces`:** which way the person in the GIF runs. **`gif_idle`:** an
+  optional second GIF shown while standing.
+- GIFs are scaled to at most 200 px high and 90 frames, so they stay light.
+- RamRonin ships no GIFs. Use clips you're allowed to use; they stay on your
+  PC.
+
+`packs-examples/vadivelu-stick.json` has three stick-figure Vadivelu
+characters (a fan tribute) with an arms-flailing "panic" run.
 
 A character is pure data, so new ones can be added without rebuilding. Put a
 `.json` file in `%APPDATA%\RamRonin\packs`, or use *Control Center ▸ Import
@@ -120,6 +166,11 @@ the exe and copied into that folder on first run:
 
 - `favorite` can be `whip`, `mallet`, `wrench`, `crowbar`, `gloves`,
   `chicken`, `orb`, `shuriken` or `kunai`.
+- Optional costume fields: `curls` (long curly hair), `mustache` (+
+  `"mustache_style": "thick" | "twirl"`), `shirt`, `vest`, `lungi`,
+  `lungi_trim`, `chain` and `crown`, all colours.
+- `"gait"`: `"ninja"` (arms-back sprint), `"run"`, or `"panic"` (the
+  arms-flailing comedy escape run).
 - One file can also hold several characters: `{"characters": [ ... ]}`.
 - See [packs-examples/](packs-examples/).
 
@@ -146,6 +197,25 @@ the exe and copied into that folder on first run:
   details go to `crash.log` in the same folder. Set the environment variable
   `RAMRONIN_DEBUG=1` (or put an empty `ramronin.debug` file next to the exe)
   to also write a `debug.log` of his state.
+
+## Troubleshooting: "I ran it and nothing happened"
+- **When it starts, a "RamRonin is running" notification appears.** The tray
+  icon may be hidden under the **^** arrow on the taskbar, because Windows 11
+  puts new tray icons there. You can pin it from *Settings ▸ Personalization ▸
+  Taskbar ▸ Other system tray icons*.
+- **Running `RamRonin.exe` again** while it's already running brings up the
+  Control Center in front of your other windows. If the running copy is stuck,
+  RamRonin says so and offers to end it and start fresh. It no longer exits
+  without telling you.
+- **If it crashes**, a message box says so, and the details go to
+  `%APPDATA%\RamRonin\crash.log`.
+- **Every launch writes a few lines to `%APPDATA%\RamRonin\startup.log`**:
+  what it decided (started, handed off to a running copy, relaunched itself),
+  your monitors, whether the tray icon was added, and where the first frame
+  was drawn. Attach that file (and `crash.log`, if there is one) to a bug
+  report.
+- If Windows Security or Smart App Control blocked the exe, check *Windows
+  Security ▸ Protection history*.
 
 ## Building
 

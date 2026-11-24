@@ -1713,7 +1713,12 @@ impl Ninja {
                 };
                 let target = if self.x - l > r - self.x { l + 30.0 } else { r - 30.0 };
                 let gait = if self.shinobi || w.look.ninja_run { Gait::Ninja } else { Gait::Run };
-                return vec![Act::Say { lines: vec![self.rng.pick(&["SPRINT!", "Gotta go fast!", "Taskbar marathon!"]).to_string()], dur: 1.4, think: false }, Act::Walk { tx: target, gait }, Act::Taunt { dur: 0.8 }];
+                let shout: &[&str] = if w.look.gait == crate::skins::Gait::Panic {
+                    &["Aaha... kilambitaangayaa!", "Odu! Odu!", "Escape! RAM is coming!"]
+                } else {
+                    &["SPRINT!", "Gotta go fast!", "Taskbar marathon!"]
+                };
+                return vec![Act::Say { lines: vec![self.rng.pick(shout).to_string()], dur: 1.4, think: false }, Act::Walk { tx: target, gait }, Act::Taunt { dur: 0.8 }];
             }
             14 => {
                 // pick a window top and insist on climbing it
@@ -2076,8 +2081,8 @@ impl Ninja {
                     Gait::Walk => poses::walk(self.phase),
                     Gait::Sneak => poses::sneak(self.phase),
                     Gait::Moonwalk => poses::walk(-self.phase),
-                    Gait::Run => poses::run(self.phase),
-                    Gait::Ninja => poses::ninja_run(self.phase),
+                    Gait::Run => w.look.sprint(false, self.phase),
+                    Gait::Ninja => w.look.sprint(true, self.phase),
                     Gait::Horse => poses::ride(t),
                     Gait::Car => poses::drive(t),
                     Gait::Pogo => poses::pogo(),
@@ -2289,7 +2294,7 @@ impl Ninja {
         let look = w.look;
         let s = self.s;
         let t = self.t;
-        let figfx = FigFx { t, vel: self.vel, tomoe: lay.tomoe, chaos: self.chaos };
+        let figfx = FigFx { t, vel: self.vel, tomoe: lay.tomoe };
 
         // afterimages
         if !lay.hidden {
@@ -2368,7 +2373,7 @@ impl Ninja {
             let a = (c.t / 0.2).min(1.0).min(((c.dur - c.t) / 0.35).max(0.0));
             draw_cloud(g, b, &c.lines, c.think, (lay.skel.head.0, lay.skel.bbox().1 - 4.0), self.ui, a);
         }
-        let hb = rig::hit_box(&lay.skel);
+        let hb = rig::hit_box(&lay.skel, look);
         self.hit = if lay.hidden { (0.0, 0.0, 0.0, 0.0) } else { hb };
     }
 }

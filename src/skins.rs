@@ -38,6 +38,39 @@ pub struct Skin {
     pub size: f32,
     /// Uses the arms-back ninja sprint.
     pub ninja_run: bool,
+    /// Running style: "ninja" (arms-back sprint), "run" (normal), "panic"
+    /// (arms flailing, knees high, comedy escape run). Empty: `ninja_run`
+    /// decides.
+    pub gait: String,
+    /// Long curly hair down to the neck.
+    pub curls: Option<String>,
+    pub mustache: Option<String>,
+    /// "thick" | "twirl"
+    pub mustache_style: String,
+    /// Short-sleeved shirt.
+    pub shirt: Option<String>,
+    /// Undershirt / vest showing at an open collar.
+    pub vest: Option<String>,
+    /// Lungi / dhoti, folded up above the knees.
+    pub lungi: Option<String>,
+    /// Border stripe on the lungi.
+    pub lungi_trim: Option<String>,
+    /// Gold chain.
+    pub chain: Option<String>,
+    pub crown: Option<String>,
+    /// Animated GIF to draw instead of the stick figure (file in the packs
+    /// folder, or a full path). Optional `gif_idle` is shown when standing.
+    pub gif: Option<String>,
+    pub gif_idle: Option<String>,
+    /// Background removal: "auto" (plain colour from the corners), a colour
+    /// "#rrggbb", or "" (keep).
+    pub gif_key: String,
+    /// Opaque GIFs without a key are shown as a rounded sticker.
+    pub gif_sticker: bool,
+    /// Which way the person in the GIF faces/runs: "right" or "left".
+    pub gif_faces: String,
+    /// Size relative to the stick figure.
+    pub gif_scale: f32,
     /// Favourite weapon: whip|mallet|wrench|crowbar|gloves|chicken|orb|shuriken|kunai
     pub favorite: String,
     pub phrases: Vec<String>,
@@ -66,10 +99,33 @@ impl Default for Skin {
             speed: 1.0,
             size: 1.0,
             ninja_run: false,
+            gait: String::new(),
+            curls: None,
+            mustache: None,
+            mustache_style: "thick".into(),
+            shirt: None,
+            vest: None,
+            lungi: None,
+            lungi_trim: None,
+            chain: None,
+            crown: None,
+            gif: None,
+            gif_idle: None,
+            gif_key: String::new(),
+            gif_sticker: true,
+            gif_faces: "right".into(),
+            gif_scale: 1.25,
             favorite: String::new(),
             phrases: vec![],
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Gait {
+    Run,
+    Ninja,
+    Panic,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -109,8 +165,35 @@ pub struct Look {
     pub speed: f32,
     pub size: f32,
     pub ninja_run: bool,
+    pub gait: Gait,
+    pub curls: Option<Col>,
+    pub mustache: Option<Col>,
+    pub twirl: bool,
+    pub shirt: Option<Col>,
+    pub vest: Option<Col>,
+    pub lungi: Option<Col>,
+    pub lungi_trim: Option<Col>,
+    pub chain: Option<Col>,
+    pub crown: Option<Col>,
+    pub sprite: Option<std::sync::Arc<crate::sprite::Sprite>>,
+    pub sprite_idle: Option<std::sync::Arc<crate::sprite::Sprite>>,
+    /// the GIF's person faces left (so mirror when facing right)
+    pub sprite_left: bool,
+    pub sprite_scale: f32,
     pub favorite: String,
     pub phrases: Vec<String>,
+}
+
+impl Look {
+    /// The running pose to use for a run/sprint picked by the behaviour code.
+    pub fn sprint(&self, ninja: bool, phase: f32) -> crate::rig::Pose {
+        use crate::rig::poses;
+        match self.gait {
+            Gait::Panic => poses::panic_run(phase),
+            _ if ninja => poses::ninja_run(phase),
+            _ => poses::run(phase),
+        }
+    }
 }
 
 impl Skin {
@@ -146,7 +229,31 @@ impl Skin {
             aura: c(&self.aura).unwrap_or(Col::rgb(90, 190, 255)),
             speed: self.speed.clamp(0.3, 3.0),
             size: self.size.clamp(0.4, 3.0),
-            ninja_run: self.ninja_run,
+            ninja_run: self.ninja_run || self.gait == "ninja",
+            gait: match self.gait.as_str() {
+                "panic" => Gait::Panic,
+                "ninja" => Gait::Ninja,
+                "run" => Gait::Run,
+                _ if self.ninja_run => Gait::Ninja,
+                _ => Gait::Run,
+            },
+            curls: c(&self.curls),
+            mustache: c(&self.mustache),
+            twirl: self.mustache_style == "twirl",
+            shirt: c(&self.shirt),
+            vest: c(&self.vest),
+            lungi: c(&self.lungi),
+            lungi_trim: c(&self.lungi_trim),
+            chain: c(&self.chain),
+            crown: c(&self.crown),
+            sprite: self.gif.as_deref().and_then(|f| {
+                crate::sprite::load(&crate::sprite::resolve(f), crate::sprite::Bg::parse(&self.gif_key, self.gif_sticker))
+            }),
+            sprite_idle: self.gif_idle.as_deref().and_then(|f| {
+                crate::sprite::load(&crate::sprite::resolve(f), crate::sprite::Bg::parse(&self.gif_key, self.gif_sticker))
+            }),
+            sprite_left: self.gif_faces.eq_ignore_ascii_case("left"),
+            sprite_scale: self.gif_scale.clamp(0.3, 4.0),
             favorite: self.favorite.clone(),
             phrases: self.phrases.clone(),
         }
@@ -335,7 +442,7 @@ mod tests {
             }
             n += list.len();
         }
-        assert_eq!(n, 3);
+        assert_eq!(n, 6);
     }
 
     #[test]

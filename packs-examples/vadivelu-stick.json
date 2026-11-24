@@ -1,0 +1,75 @@
+{
+  "characters": [
+    {
+      "id": "vadivelu_sprint",
+      "name": "Vadivelu: Yellow Shirt Sprint",
+      "author": "RamRonin (fan tribute)",
+      "body": "#6e4429",
+      "head_fill": "#c68a5e",
+      "curls": "#17110d",
+      "mustache": "#17110d",
+      "gait": "panic",
+      "shirt": "#f2c230",
+      "vest": "#d42a2a",
+      "lungi": "#262b40",
+      "lungi_trim": "#b9bccb",
+      "chain": "#e8c04a",
+      "favorite": "chicken",
+      "speed": 1.15,
+      "phrases": [
+        "Aaha... kilambitaangayaa!",
+        "Vada pochey! (and so did your RAM)",
+        "Mudiyala... RAM mudiyala!",
+        "Edhaiyum plan panni pannanum.",
+        "Ennama ipdi panreengalema?"
+      ]
+    },
+    {
+      "id": "vadivelu_lungi",
+      "name": "Vadivelu: Lungi Don",
+      "author": "RamRonin (fan tribute)",
+      "body": "#6e4429",
+      "head_fill": "#c68a5e",
+      "curls": "#17110d",
+      "mustache": "#17110d",
+      "gait": "panic",
+      "shirt": "#f3f1ea",
+      "lungi": "#2f7a4c",
+      "lungi_trim": "#f2c230",
+      "scarf": "#c0392b",
+      "favorite": "mallet",
+      "speed": 1.1,
+      "phrases": [
+        "Naanum rowdy dhaan!",
+        "Ennama ipdi panreengalema?",
+        "Aaha... kilambitaangayaa!",
+        "Mudiyala!"
+      ]
+    },
+    {
+      "id": "vadivelu_emperor",
+      "name": "Vadivelu: Emperor",
+      "author": "RamRonin (fan tribute)",
+      "body": "#6e4429",
+      "head_fill": "#c68a5e",
+      "curls": "#17110d",
+      "mustache": "#17110d",
+      "gait": "panic",
+      "mustache_style": "twirl",
+      "crown": "#e8b923",
+      "shirt": "#8e1b3a",
+      "vest": "#e8c04a",
+      "lungi": "#efe3c2",
+      "lungi_trim": "#c9a227",
+      "chain": "#e8c04a",
+      "favorite": "whip",
+      "speed": 0.95,
+      "phrases": [
+        "Royal decree: close some tabs!",
+        "The emperor demands free RAM!",
+        "Mudiyala!",
+        "Aaha... kilambitaangayaa!"
+      ]
+    }
+  ]
+}

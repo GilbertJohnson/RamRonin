@@ -9,7 +9,7 @@
 //!  * rot: whole-body rotation, + = forward (front-flip direction).
 
 use crate::gfx::Gfx;
-use crate::skins::{EyeStyle, HeadStyle, Look};
+use crate::skins::{EyeStyle, Gait, HeadStyle, Look};
 use crate::util::*;
 
 pub const TH: f32 = 15.0;
@@ -309,6 +309,30 @@ pub mod poses {
             fa_b: -60.0,
             dy: -3.0 * (2.0 * p).sin().abs(),
             expr: Expr::Focus,
+            ..Default::default()
+        }
+    }
+
+    /// The comedy escape run: upright and leaning back, head thrown back,
+    /// mouth open, knees pumping high, both arms flailing wildly.
+    pub fn panic_run(p: f32) -> Pose {
+        let s = sn(p);
+        let c = p.cos();
+        let w = (2.0 * p).sin();
+        Pose {
+            torso: -8.0 + 4.0 * w,
+            head: -14.0 + 7.0 * (2.0 * p).cos(),
+            th_f: 52.0 * s + 16.0,
+            sh_f: 52.0 * s - 28.0 - 60.0 * c.max(0.0),
+            th_b: -52.0 * s + 16.0,
+            sh_b: -52.0 * s - 28.0 - 60.0 * (-c).max(0.0),
+            // arms whirl: big swings with loose, flapping forearms
+            ua_f: 75.0 * s + 45.0,
+            fa_f: 75.0 * s + 45.0 + 70.0 + 25.0 * (2.0 * p + 1.0).sin(),
+            ua_b: -75.0 * s + 45.0,
+            fa_b: -75.0 * s + 45.0 + 70.0 + 25.0 * (2.0 * p + 2.5).sin(),
+            dy: -4.0 * w.abs(),
+            expr: Expr::Shock,
             ..Default::default()
         }
     }
@@ -839,7 +863,6 @@ pub struct FigFx {
     pub vel: P,
     /// force the red tomoe eye (Shinobi edition moments)
     pub tomoe: bool,
-    pub chaos: f32,
 }
 
 fn ribbon(sk: &Skel, from: P, len: f32, width: f32, col: Col, fx: &FigFx, phase: f32, g: &mut Gfx) {
@@ -863,7 +886,178 @@ fn ribbon(sk: &Skel, from: P, len: f32, width: f32, col: Col, fx: &FigFx, phase:
     g.taper(&pts, width, width * 0.55, col);
 }
 
+/// Convex hull (for the lungi, which wraps both thighs).
+fn hull(mut pts: Vec<P>) -> Vec<P> {
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let cross = |o: P, a: P, b: P| (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0);
+    let mut lower: Vec<P> = vec![];
+    for &p in &pts {
+        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 0.0 {
+            lower.pop();
+        }
+        lower.push(p);
+    }
+    let mut upper: Vec<P> = vec![];
+    for &p in pts.iter().rev() {
+        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], p) <= 0.0 {
+            upper.pop();
+        }
+        upper.push(p);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
+}
+
+/// Torso frame: unit vector hip->neck, and the "chest" normal (forward).
+fn torso_frame(sk: &Skel) -> (P, P, f32) {
+    let (dx, dy) = (sk.neck.0 - sk.hip.0, sk.neck.1 - sk.hip.1);
+    let l = (dx * dx + dy * dy).sqrt().max(0.001);
+    let t = (dx / l, dy / l);
+    let n = (-t.1 * sk.facing, t.0 * sk.facing);
+    (t, n, l)
+}
+
+fn off(p: P, v: P, k: f32) -> P {
+    (p.0 + v.0 * k, p.1 + v.1 * k)
+}
+
+/// Shirt on the torso (+ vest at the collar) and short sleeves on one arm.
+fn draw_shirt(g: &mut Gfx, sk: &Skel, look: &Look) {
+    let Some(sc) = look.shirt else { return };
+    let s = sk.s;
+    let (t, n, _) = torso_frame(sk);
+    let top = off(sk.neck, t, -1.5 * s);
+    let bot = off(sk.hip, t, 1.5 * s);
+    let pts = [off(top, n, -4.6 * s), off(top, n, 4.4 * s), off(bot, n, 4.0 * s), off(bot, n, -4.0 * s)];
+    g.poly(&pts, sc);
+    g.poly_stroke(&pts, 0.9 * s, sc.mix(BLACK, 0.35));
+    if let Some(vc) = look.vest {
+        // open collar: vest V on the chest
+        let v = [off(top, n, -0.6 * s), off(top, n, 4.4 * s), off(lerp_p(top, bot, 0.55), n, 3.4 * s), off(lerp_p(top, bot, 0.2), n, 0.6 * s)];
+        g.poly(&v, vc);
+    }
+    // buttons
+    for k in [0.55, 0.75] {
+        g.circle(off(lerp_p(top, bot, k), n, 3.3 * s), 0.55 * s, sc.mix(WHITE, 0.6));
+    }
+}
+
+fn draw_sleeve(g: &mut Gfx, sk: &Skel, look: &Look, front: bool) {
+    let Some(sc) = look.shirt else { return };
+    let s = sk.s;
+    let elbow = if front { sk.elbow_f } else { sk.elbow_b };
+    let end = lerp_p(sk.shoulder, elbow, 0.62);
+    let c = if front { sc } else { sc.mix(BLACK, 0.18) };
+    g.line(sk.shoulder, end, 5.4 * s, c.mix(BLACK, 0.3));
+    g.line(sk.shoulder, end, 4.2 * s, c);
+}
+
+/// Lungi folded up above the knees, wrapping both thighs.
+fn draw_lungi(g: &mut Gfx, sk: &Skel, look: &Look) {
+    let Some(lc) = look.lungi else { return };
+    let s = sk.s;
+    let (t, n, _) = torso_frame(sk);
+    let waist = off(sk.hip, t, 3.0 * s);
+    let mut pts = vec![off(waist, n, -4.2 * s), off(waist, n, 4.2 * s), off(sk.hip, n, -4.4 * s), off(sk.hip, n, 4.4 * s)];
+    let mut hem = vec![];
+    for knee in [sk.knee_f, sk.knee_b] {
+        let k = lerp_p(sk.hip, knee, 0.82);
+        let (dx, dy) = (knee.0 - sk.hip.0, knee.1 - sk.hip.1);
+        let l = (dx * dx + dy * dy).sqrt().max(0.001);
+        let side = (-dy / l * 3.6 * s, dx / l * 3.6 * s);
+        pts.push(off(k, side, 1.0));
+        pts.push(off(k, side, -1.0));
+        hem.push(k);
+    }
+    let h = hull(pts);
+    g.poly(&h, lc);
+    g.poly_stroke(&h, 0.9 * s, lc.mix(BLACK, 0.4));
+    if let Some(tc) = look.lungi_trim {
+        // border stripe along the hem and a fold line at the waist
+        g.line(hem[0], hem[1], 1.6 * s, tc);
+        g.line(off(waist, n, -4.0 * s), off(waist, n, 4.0 * s), 1.4 * s, tc);
+    }
+}
+
+fn draw_chain(g: &mut Gfx, sk: &Skel, look: &Look) {
+    let Some(cc) = look.chain else { return };
+    let s = sk.s;
+    let (t, n, _) = torso_frame(sk);
+    let low = off(lerp_p(sk.neck, sk.hip, 0.3), n, 3.2 * s);
+    g.polyline(&[off(sk.neck, n, 0.2 * s), low, off(off(sk.neck, n, 4.0 * s), t, -s)], 1.1 * s, cc);
+    g.circle(low, 1.3 * s, cc);
+}
+
+/// Long curly hair: the part behind the head and down the neck.
+fn draw_curls_back(g: &mut Gfx, look: &Look, at: &dyn Fn(f32, f32) -> P, r: f32) {
+    let Some(hc) = look.curls else { return };
+    for &(a, b, k) in &[(-0.55, 0.75, 0.5), (-0.95, 0.3, 0.5), (-1.05, -0.25, 0.48), (-0.95, -0.8, 0.45), (-0.7, -1.2, 0.4), (-0.25, 0.95, 0.48)] {
+        g.circle(at(a, b), r * k, hc);
+    }
+}
+
+/// ... and the curly fringe on top of the head.
+fn draw_curls_top(g: &mut Gfx, look: &Look, at: &dyn Fn(f32, f32) -> P, r: f32) {
+    let Some(hc) = look.curls else { return };
+    let rim = hc.mix(WHITE, 0.12);
+    for (i, &(a, b)) in [(-0.85, 0.55), (-0.55, 0.85), (-0.15, 1.0), (0.25, 0.97), (0.6, 0.8), (0.8, 0.55)].iter().enumerate() {
+        g.circle(at(a, b), r * 0.36, if i % 2 == 0 { hc } else { rim });
+    }
+}
+
+fn draw_mustache(g: &mut Gfx, look: &Look, at: &dyn Fn(f32, f32) -> P, r: f32) {
+    let Some(mc) = look.mustache else { return };
+    if look.twirl {
+        // grand twirled moustache
+        g.polyline(&[at(0.62, -0.2), at(0.38, -0.34), at(0.16, -0.32), at(0.06, -0.18), at(0.16, -0.1)], r * 0.16, mc);
+        g.polyline(&[at(0.62, -0.2), at(0.92, -0.34), at(1.18, -0.28), at(1.26, -0.12), at(1.14, -0.05)], r * 0.16, mc);
+    } else {
+        // thick, slightly drooping
+        g.polyline(&[at(0.3, -0.3), at(0.45, -0.12), at(0.75, -0.08), at(1.02, -0.18), at(1.08, -0.36)], r * 0.22, mc);
+    }
+}
+
+fn draw_crown(g: &mut Gfx, look: &Look, at: &dyn Fn(f32, f32) -> P, r: f32) {
+    let Some(cc) = look.crown else { return };
+    let pts = [at(-0.75, 0.62), at(-0.85, 1.55), at(-0.42, 1.12), at(0.0, 1.7), at(0.42, 1.12), at(0.85, 1.55), at(0.75, 0.62)];
+    g.poly(&pts, cc);
+    g.poly_stroke(&pts, r * 0.08, cc.mix(BLACK, 0.4));
+    g.line(at(-0.78, 0.7), at(0.78, 0.7), r * 0.2, cc.mix(BLACK, 0.15));
+    g.circle(at(0.0, 1.0), r * 0.17, Col::rgb(210, 20, 40));
+    for x in [-0.85, 0.0, 0.85] {
+        g.circle(at(x, if x == 0.0 { 1.72 } else { 1.57 }), r * 0.1, WHITE);
+    }
+}
+
+/// Where a GIF character is drawn: (bottom-centre, height, rotation degrees).
+fn sprite_place(sk: &Skel, look: &Look) -> (P, f32, f32) {
+    let foot = (sk.hip.0, sk.foot_f.1.max(sk.foot_b.1));
+    let height = HEIGHT * sk.s * look.sprite_scale;
+    // follow the body only when it's really tipped over (flips, handstands)
+    let ang = (sk.neck.0 - sk.hip.0).atan2(sk.hip.1 - sk.neck.1).to_degrees();
+    let deg = if ang.abs() > 55.0 { ang } else { 0.0 };
+    (foot, height, deg)
+}
+
+fn draw_sprite(g: &mut Gfx, sk: &Skel, look: &Look, fx: &FigFx, sp: &crate::sprite::Sprite) {
+    let (foot, height, deg) = sprite_place(sk, look);
+    let moving = (fx.vel.0 * fx.vel.0 + fx.vel.1 * fx.vel.1).sqrt() > 15.0;
+    let (sp, frame) = match (&look.sprite_idle, moving) {
+        (Some(idle), false) => (idle.as_ref(), idle.frame_at(fx.t)),
+        (_, true) => (sp, sp.frame_at(fx.t)),
+        (None, false) => (sp, &sp.frames[0].0),
+    };
+    let flip = (sk.facing < 0.0) != look.sprite_left;
+    crate::sprite::draw(g, sp, frame, foot, height, flip, deg);
+}
+
 pub fn draw_figure(g: &mut Gfx, sk: &Skel, look: &Look, fx: &FigFx) {
+    if let Some(sp) = &look.sprite {
+        draw_sprite(g, sk, look, fx, sp);
+        return;
+    }
     let s = sk.s;
     let lw = look.lw * s / 1.0 * 0.9;
     let body = look.body;
@@ -887,14 +1081,19 @@ pub fn draw_figure(g: &mut Gfx, sk: &Skel, look: &Look, fx: &FigFx) {
         }
         g.circle(c, r * 1.25, ac);
     }
+    draw_curls_back(g, look, &at, r);
 
     // back limbs
     g.polyline(&[sk.shoulder, sk.elbow_b, sk.hand_b], lw, back);
+    draw_sleeve(g, sk, look, false);
     g.polyline(&[sk.hip, sk.knee_b, sk.foot_b], lw, back);
     // torso
     g.line(sk.hip, sk.neck, lw * 1.05, body);
+    draw_shirt(g, sk, look);
     // front leg
     g.polyline(&[sk.hip, sk.knee_f, sk.foot_f], lw, body);
+    draw_lungi(g, sk, look);
+    draw_chain(g, sk, look);
 
     // headband tails (behind head)
     if let (Some(bc), true) = (look.band, look.tails) {
@@ -919,6 +1118,8 @@ pub fn draw_figure(g: &mut Gfx, sk: &Skel, look: &Look, fx: &FigFx) {
             }
         }
     }
+    draw_curls_top(g, look, &at, r);
+    draw_crown(g, look, &at, r);
     if look.head == HeadStyle::Masked {
         // eye slit band
         g.line(at(-0.1, 0.12), at(0.95, 0.12), r * 0.42, Col::rgb(235, 225, 210));
@@ -947,7 +1148,7 @@ pub fn draw_figure(g: &mut Gfx, sk: &Skel, look: &Look, fx: &FigFx) {
 
     // face
     let expr = sk.expr;
-    let eye_style = if fx.tomoe && look.eye != EyeStyle::Visor { EyeStyle::Tomoe } else { look.eye };
+    let eye_style = if fx.tomoe && look.eye != EyeStyle::Visor && look.gait != Gait::Panic { EyeStyle::Tomoe } else { look.eye };
     let eye = at(0.48, 0.12);
     let light_face = look.head_fill.luma() > 0.55;
     let ink = if light_face { BLACK } else { WHITE };
@@ -1022,13 +1223,20 @@ pub fn draw_figure(g: &mut Gfx, sk: &Skel, look: &Look, fx: &FigFx) {
         }
         _ => {}
     }
+    draw_mustache(g, look, &at, r);
 
     // front arm last (in front of body)
     g.polyline(&[sk.shoulder, sk.elbow_f, sk.hand_f], lw, body);
+    draw_sleeve(g, sk, look, true);
 }
 
 /// Points used to approximate the clickable hit box of a figure.
-pub fn hit_box(sk: &Skel) -> (f32, f32, f32, f32) {
+pub fn hit_box(sk: &Skel, look: &Look) -> (f32, f32, f32, f32) {
+    if let Some(sp) = &look.sprite {
+        let (foot, height, _) = sprite_place(sk, look);
+        let (w, h) = sp.size_for(height);
+        return (foot.0 - w / 2.0, foot.1 - h, foot.0 + w / 2.0, foot.1);
+    }
     let b = sk.bbox();
     let pad = 4.0 * sk.s;
     (b.0 - pad, b.1 - pad, b.2 + pad, b.3 + pad)

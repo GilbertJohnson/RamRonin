@@ -15,6 +15,7 @@
 mod brain;
 mod config;
 mod control;
+mod diag;
 mod fx;
 mod gfx;
 mod keepalive;
@@ -22,6 +23,7 @@ mod memory;
 mod props;
 mod rig;
 mod skins;
+mod sprite;
 mod system;
 mod taskbar;
 mod tracker;
@@ -65,6 +67,8 @@ struct COPYDATASTRUCT {
     lpData: *mut c_void,
 }
 const TIMER_FRAME: usize = 1;
+/// retries adding the tray icon if Explorer wasn't ready yet
+const TIMER_TRAY: usize = 2;
 
 thread_local! {
     pub static CFG: RefCell<Config> = RefCell::new(Config::default());
@@ -110,6 +114,8 @@ pub struct App {
     debug: bool,
     last_debug: Instant,
     tb_logged: usize,
+    first_frame_logged: bool,
+    tray_tries: u32,
 }
 
 impl App {
@@ -240,10 +246,24 @@ impl App {
             let size = SIZE { cx: w, cy: h };
             let pt_src = POINT { x: 0, y: 0 };
             let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
-            UpdateLayeredWindow(self.overlay, std::ptr::null_mut(), &pt_dst, &size, d.dc, &pt_src, 0, &blend, ULW_ALPHA);
+            let ok = UpdateLayeredWindow(self.overlay, std::ptr::null_mut(), &pt_dst, &size, d.dc, &pt_src, 0, &blend, ULW_ALPHA);
             if !self.shown {
                 ShowWindow(self.overlay, SW_SHOWNOACTIVATE);
                 self.shown = true;
+                if !self.first_frame_logged {
+                    self.first_frame_logged = true;
+                    let err = if ok == 0 { GetLastError() } else { 0 };
+                    diag::log(format!(
+                        "first frame drawn at ({}, {}) size {}x{}, UpdateLayeredWindow ok={} err={}, visible={}",
+                        x,
+                        y,
+                        w,
+                        h,
+                        ok != 0,
+                        err,
+                        IsWindowVisible(self.overlay) != 0
+                    ));
+                }
             }
         }
     }
@@ -374,12 +394,28 @@ fn append(m: HMENU, id: usize, text: &str, checked: bool, enabled: bool) {
     }
 }
 
+thread_local! {
+    /// when the last popup menu closed (to ignore an immediate re-open)
+    static MENU_CLOSED: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// A pick made this soon after the menu appeared is the second half of a
+/// double-click, not a choice: the menu opens right under the pointer.
+const MENU_GUARD: Duration = Duration::from_millis(350);
+
 pub fn show_menu(host: HWND) {
+    if MENU_CLOSED.with(|c| c.get()).map(|t| t.elapsed() < MENU_GUARD).unwrap_or(false) {
+        return;
+    }
     let cfg = cfg_get(|c| c.clone());
     let (skins, hidden) = with_app(|a| (a.skins.iter().map(|s| (s.id.clone(), s.name.clone())).collect::<Vec<_>>(), a.hidden)).unwrap_or_default();
     unsafe {
         // compact: a few top-level entries, everything else in sub-menus
         let m = CreatePopupMenu();
+        // inert title line: whatever sits under the pointer when the menu
+        // opens downward is harmless
+        append(m, 0, &format!("RamRonin {}", system::VERSION), false, false);
+        AppendMenuW(m, MF_SEPARATOR, 0, std::ptr::null());
         append(m, CMD_CONTROL, "Control Center...\tCtrl+Alt+R", false, true);
         let ch = CreatePopupMenu();
         for (i, (id, name)) in skins.iter().enumerate() {
@@ -408,9 +444,15 @@ pub fn show_menu(host: HWND) {
         append(m, CMD_EXIT, "Exit RamRonin", false, true);
         let (cx, cy) = win::cursor_pos();
         SetForegroundWindow(host);
-        let cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, cx, cy, 0, host, std::ptr::null()) as usize;
+        let opened = Instant::now();
+        let mut cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, cx, cy, 0, host, std::ptr::null()) as usize;
         PostMessageW(host, WM_NULL, 0, 0);
         DestroyMenu(m);
+        MENU_CLOSED.with(|c| c.set(Some(Instant::now())));
+        if cmd != 0 && opened.elapsed() < MENU_GUARD {
+            diag::log(format!("ignored menu pick {} made {} ms after opening (double-click)", cmd, opened.elapsed().as_millis()));
+            cmd = 0;
+        }
         handle_cmd(cmd);
     }
 }
@@ -473,7 +515,9 @@ pub fn quit() {
 // window procedures
 // ---------------------------------------------------------------------------
 
-fn tray(host: HWND, add: bool) {
+/// Add or remove the tray icon. Returns false if the shell refused (e.g.
+/// Explorer isn't ready yet right after sign-in).
+fn tray(host: HWND, add: bool) -> bool {
     unsafe {
         let mut nid: NOTIFYICONDATAW = zeroed();
         nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
@@ -485,11 +529,62 @@ fn tray(host: HWND, add: bool) {
             nid.hIcon = LoadIconW(GetModuleHandleW(std::ptr::null()), 1 as _);
             let tip = wide("RamRonin - right-click for menu");
             nid.szTip[..tip.len()].copy_from_slice(&tip);
-            Shell_NotifyIconW(NIM_ADD, &nid);
+            if Shell_NotifyIconW(NIM_ADD, &nid) != 0 {
+                return true;
+            }
+            // already there (e.g. after TaskbarCreated): refresh it instead
+            Shell_NotifyIconW(NIM_MODIFY, &nid) != 0
         } else {
-            Shell_NotifyIconW(NIM_DELETE, &nid);
+            Shell_NotifyIconW(NIM_DELETE, &nid) != 0
         }
     }
+}
+
+/// "RamRonin is running" notification from the tray icon. Windows 11 puts
+/// new tray icons in the hidden overflow area, so without this a first
+/// launch can look like nothing happened.
+fn tray_notice(host: HWND, title: &str, text: &str) {
+    unsafe {
+        let mut nid: NOTIFYICONDATAW = zeroed();
+        nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
+        nid.hWnd = host;
+        nid.uID = 1;
+        nid.uFlags = NIF_INFO;
+        nid.dwInfoFlags = NIIF_INFO;
+        let t = wide(title);
+        let n = t.len().min(nid.szInfoTitle.len());
+        nid.szInfoTitle[..n].copy_from_slice(&t[..n]);
+        nid.szInfoTitle[nid.szInfoTitle.len() - 1] = 0;
+        let b = wide(text);
+        let n = b.len().min(nid.szInfo.len());
+        nid.szInfo[..n].copy_from_slice(&b[..n]);
+        nid.szInfo[nid.szInfo.len() - 1] = 0;
+        Shell_NotifyIconW(NIM_MODIFY, &nid);
+    }
+}
+
+/// Add the tray icon; if the shell isn't ready, keep retrying for a while.
+fn add_tray_or_retry(host: HWND) -> bool {
+    if tray(host, true) {
+        unsafe {
+            KillTimer(host, TIMER_TRAY);
+        }
+        return true;
+    }
+    let tries = with_app(|a| {
+        a.tray_tries += 1;
+        a.tray_tries
+    })
+    .unwrap_or(1);
+    unsafe {
+        if tries < 60 {
+            SetTimer(host, TIMER_TRAY, 2000, None);
+        } else {
+            KillTimer(host, TIMER_TRAY);
+            diag::log("could not add the tray icon after 60 tries");
+        }
+    }
+    false
 }
 
 fn frame() {
@@ -508,6 +603,12 @@ unsafe extern "system" fn host_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
     match msg {
         WM_TIMER if wp == TIMER_FRAME => {
             frame();
+            0
+        }
+        WM_TIMER if wp == TIMER_TRAY => {
+            if add_tray_or_retry(h) {
+                diag::log("tray icon added (retry)");
+            }
             0
         }
         WM_HOTKEY => {
@@ -564,7 +665,7 @@ unsafe extern "system" fn host_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
         _ => {
             let tb = with_app(|a| a.taskbar_msg).unwrap_or(0);
             if tb != 0 && msg == tb {
-                tray(h, true);
+                add_tray_or_retry(h);
                 return 0;
             }
             DefWindowProcW(h, msg, wp, lp)
@@ -646,16 +747,10 @@ fn register_class(name: &str, proc_: WNDPROC, cursor: PCWSTR, dbl: bool) {
 use windows_sys::core::PCWSTR;
 
 fn main() {
-    std::panic::set_hook(Box::new(|info| {
-        let msg = format!("[{:?}] RamRonin {} crashed: {}\n", std::time::SystemTime::now(), system::VERSION, info);
-        let _ = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(data_dir().join("crash.log"))
-            .and_then(|mut f| std::io::Write::write_all(&mut f, msg.as_bytes()));
-    }));
+    diag::install_crash_handlers();
 
     let args: Vec<String> = std::env::args().collect();
+    diag::log(format!("---- RamRonin {} starting: {:?} args {:?}", system::VERSION, win::exe_path(), &args[1..]));
     let has = |a: &str| args.iter().any(|x| x.eq_ignore_ascii_case(a));
     if has("--uninstall") {
         system::uninstall_flow();
@@ -704,19 +799,34 @@ fn main() {
     }
     // started from inside a packaged app (e.g. a Store app's terminal)? Then
     // Windows would sandbox our files and registry: relaunch via the shell.
-    if args.len() <= 1 && system::break_out_of_package() {
+    let autostarted = has(system::AUTOSTART_ARG);
+    if args.iter().skip(1).all(|a| a.eq_ignore_ascii_case(system::AUTOSTART_ARG)) && system::break_out_of_package() {
+        diag::log("started inside a packaged app; relaunched through Explorer and exiting");
         return;
     }
     system::cleanup_old();
     let after_swap = has("--updated") || has("--installed");
     if !after_swap && system::other_instance_window() {
-        system::signal_existing();
-        return;
+        if system::signal_existing() {
+            diag::log("already running: asked the running copy to show itself, exiting");
+            return;
+        }
+        if !system::handle_stuck_instance() {
+            return;
+        }
     }
     if !system::acquire_single_instance(after_swap) {
-        system::signal_existing();
-        return;
+        // another copy holds the lock: it may still be starting up
+        if system::wait_for_other_window(4000) && system::signal_existing() {
+            diag::log("already running (was starting up): asked it to show itself, exiting");
+            return;
+        }
+        if !system::handle_stuck_instance() || !system::acquire_single_instance(true) {
+            diag::log("could not get the single-instance lock, exiting");
+            return;
+        }
     }
+    diag::log("single-instance lock acquired");
 
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -772,8 +882,15 @@ fn main() {
         (host, overlay)
     };
     if host.is_null() || overlay.is_null() {
-        win::message_box(std::ptr::null_mut(), "RamRonin could not create its windows.", "RamRonin", MB_ICONERROR);
+        let err = unsafe { GetLastError() };
+        diag::log(format!("could not create windows (host null={}, overlay null={}, error {})", host.is_null(), overlay.is_null(), err));
+        win::message_box(std::ptr::null_mut(), &format!("RamRonin could not create its windows (error {}).", err), "RamRonin", MB_ICONERROR);
         return;
+    }
+    {
+        let mons = win::monitors();
+        let desc: Vec<String> = mons.iter().map(|m| format!("{}x{}@({},{}) dpi {}{}", m.rect.w(), m.rect.h(), m.rect.l, m.rect.t, m.dpi, if m.primary { " primary" } else { "" })).collect();
+        diag::log(format!("windows created; monitors: {}", desc.join(", ")));
     }
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -795,6 +912,9 @@ fn main() {
         ninja.say(vec!["Installed! Find me in the Start Menu.".into()], 5.0, false);
     }
     let autostart = system::autostart_enabled();
+    if autostart {
+        system::refresh_autostart_entry();
+    }
     let taskbar_msg = unsafe { RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()) };
     let app = App {
         host,
@@ -825,6 +945,8 @@ fn main() {
         debug: std::env::var_os("RAMRONIN_DEBUG").is_some() || debug_flag_file().is_some(),
         last_debug: Instant::now(),
         tb_logged: 0,
+        first_frame_logged: false,
+        tray_tries: 0,
     };
     APP.with(|a| *a.borrow_mut() = Some(app));
     if !cfg.welcomed || autostart != cfg.autostart || !cfg.packs_seeded {
@@ -836,7 +958,15 @@ fn main() {
     }
 
     unsafe {
-        tray(host, true);
+        let tray_ok = add_tray_or_retry(host);
+        diag::log(format!("tray icon added: {}", tray_ok));
+        if tray_ok && !autostarted && !after_swap {
+            tray_notice(
+                host,
+                "RamRonin is running",
+                "The ninja is on your screen. His tray icon may be under the ^ arrow on the taskbar. Right-click either one for the menu, or press Ctrl+Alt+R.",
+            );
+        }
         RegisterHotKey(host, 1, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'R' as u32);
         RegisterHotKey(host, 2, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'H' as u32);
         SetTimer(host, TIMER_FRAME, 1000 / cfg.fps.clamp(15, 60), None);
@@ -851,6 +981,7 @@ fn main() {
             DispatchMessageW(&msg);
         }
     }
+    diag::log("message loop ended, exiting");
     stop.store(true, Ordering::Relaxed);
     cfg_get(|c| c.save());
     std::thread::sleep(Duration::from_millis(150));

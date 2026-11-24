@@ -65,10 +65,16 @@ pub struct Keep {
     pub prevent_sleep: bool,
     pub relaunch: bool,
     pub visits: bool,
+    /// heartbeat methods (any mix; at least one is used)
+    pub key: bool,
+    pub mouse: bool,
+    /// briefly bring the app's window forward (for apps that only count
+    /// activity in their own window)
+    pub wake: bool,
 }
 impl Default for Keep {
     fn default() -> Self {
-        Keep { enabled: false, apps: vec![], interval_s: 60, idle_s: 60, prevent_sleep: true, relaunch: false, visits: true }
+        Keep { enabled: false, apps: vec![], interval_s: 60, idle_s: 60, prevent_sleep: true, relaunch: false, visits: true, key: true, mouse: true, wake: true }
     }
 }
 
